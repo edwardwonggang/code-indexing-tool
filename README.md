@@ -23,30 +23,106 @@ pip install -r requirements.txt
 pip install mcp
 ```
 
-### 2️⃣ 必备外部工具
-这些工具是**必需的**，用于全面分析C代码：
+### 2️⃣ 完整工具安装指南
 
-#### Universal CTags（必备）
-```bash
-# Windows使用Chocolatey安装
+#### 🚀 一键自动安装（推荐）
+```powershell
+# 运行自动安装脚本（需要管理员权限）
+.\install.ps1
+```
+
+这会自动安装所有必需工具：
+- ✅ **CodeQL** - GitHub高级代码分析
+- ✅ **Cppcheck** - C/C++静态分析  
+- ✅ **Python LSP** - Python语言服务器
+- ✅ **TypeScript LSP** - JavaScript/TypeScript语言服务器
+- ✅ **Clangd LSP** - C/C++语言服务器
+- ✅ **Universal CTags** - 符号提取
+- ✅ **Cscope** - 调用关系分析
+
+#### 🔧 手动安装（可选）
+
+如果自动安装失败，可以手动安装各个工具：
+
+##### 1. CodeQL（高级代码分析）
+```powershell
+# 下载并安装CodeQL CLI
+$codeqlVersion = "2.15.4"
+$codeqlUrl = "https://github.com/github/codeql-cli-binaries/releases/download/v$codeqlVersion/codeql-win64.zip"
+Invoke-WebRequest -Uri $codeqlUrl -OutFile "codeql.zip"
+Expand-Archive -Path "codeql.zip" -DestinationPath "C:\tools"
+
+# 添加到PATH环境变量
+$env:PATH += ";C:\tools\codeql\codeql"
+```
+
+##### 2. Cppcheck（C/C++静态分析）
+```powershell
+# 使用Chocolatey安装
+choco install cppcheck
+
+# 或手动下载：https://cppcheck.sourceforge.io/
+```
+
+##### 3. LSP服务器集合
+```powershell
+# Python LSP服务器
+pip install python-lsp-server[all]
+
+# TypeScript/JavaScript LSP服务器  
+npm install -g typescript-language-server typescript
+
+# Clangd LSP服务器（C/C++）
+choco install llvm
+```
+
+##### 4. Universal CTags（符号提取）
+```powershell
+# 使用Chocolatey安装
 choco install universal-ctags
 
-# 或者从官网下载Windows版本：https://github.com/universal-ctags/ctags
+# 或从官网下载：https://github.com/universal-ctags/ctags
 ```
 
-#### Cscope（必备）
-通过MSYS2在Windows上安装：
-```bash
-# 1. 安装MSYS2（如果没有）
-# 下载：https://www.msys2.org/
+##### 5. Cscope（调用关系分析）
+```powershell
+# 通过MSYS2安装
+choco install msys2
 
-# 2. 在MSYS2终端中安装cscope
-pacman -S cscope
+# 在MSYS2终端中执行：
+# pacman -S cscope
 
-# 3. 添加到Windows PATH环境变量
-# 将 C:\msys64\usr\bin 添加到系统PATH
-# 或者 C:\tools\msys64\usr\bin（取决于MSYS2安装位置）
+# 添加MSYS2到PATH：C:\msys64\usr\bin
 ```
+
+#### ✅ 验证安装
+运行验证脚本检查所有工具：
+```powershell
+python install.py
+```
+
+或手动验证各工具：
+```powershell
+# 检查版本信息
+codeql version
+cppcheck --version  
+pylsp --version
+typescript-language-server --version
+clangd --version
+ctags --version
+cscope -V
+```
+
+#### 🔍 当前工具状态
+| 工具 | 功能 | 安装方式 | 验证命令 |
+|------|------|----------|----------|
+| **CodeQL** | 高级代码分析 | GitHub下载 | `codeql version` |
+| **Cppcheck** | C/C++静态分析 | Chocolatey | `cppcheck --version` |
+| **Python LSP** | Python语言服务器 | pip | `pylsp --version` |
+| **TypeScript LSP** | JS/TS语言服务器 | npm | `typescript-language-server --version` |
+| **Clangd LSP** | C/C++语言服务器 | LLVM | `clangd --version` |
+| **Universal CTags** | 符号提取 | Chocolatey | `ctags --version` |
+| **Cscope** | 调用关系分析 | MSYS2 | `cscope -V` |
 
 #### Clangd LSP（必备）
 提供高精度的语义分析和类型推断：
@@ -253,18 +329,39 @@ A: 确保MSYS2安装正确，并将 `C:\msys64\usr\bin` 添加到系统PATH
 A: 请确保LLVM正确安装并在PATH中。验证：`clangd --version` 应显示版本20.1.8
 
 **Q: 所有工具都是必需的吗？**
-A: 是的，为了提供最佳的分析体验，所有5个工具都是必备的：
-- **Tree-sitter + Lizard**: 基础语法分析
-- **CTags**: 精确符号提取  
-- **Cscope**: 调用关系分析
-- **Clangd LSP**: 高精度语义分析
-- **TSQuery**: 高级语法查询
+A: 是的，为了提供最佳的分析体验，所有7个工具都是必备的：
+- **CodeQL**: GitHub高级代码分析和安全扫描
+- **Cppcheck**: C/C++静态分析和错误检测
+- **Python LSP**: Python代码智能分析
+- **TypeScript LSP**: JavaScript/TypeScript代码分析
+- **Clangd LSP**: C/C++高精度语义分析
+- **Universal CTags**: 精确符号提取和跨文件引用
+- **Cscope**: 调用关系分析和代码导航
 
 **Q: 工具安装验证失败？**
 A: 按照以下顺序检查：
-1. 重新打开PowerShell窗口（刷新环境变量）
-2. 运行验证命令确认各工具版本
-3. 确保所有工具都返回正确的版本信息
+1. **重新打开PowerShell窗口**（刷新环境变量）
+2. **运行自动验证**：`python install.py`
+3. **手动验证各工具**：
+   ```powershell
+   codeql version          # 应显示 CodeQL 2.15.4+
+   cppcheck --version      # 应显示 Cppcheck 版本
+   pylsp --version         # 应显示 Python LSP 版本
+   typescript-language-server --version  # 应显示 TS LSP 版本
+   clangd --version        # 应显示 Clangd 版本
+   ctags --version         # 应显示 Universal CTags 版本
+   cscope -V              # 应显示 Cscope 版本
+   ```
+4. **检查PATH环境变量**：确保所有工具目录都在系统PATH中
+5. **重新运行安装脚本**：`.\install.ps1`（管理员权限）
+
+**Q: 某个工具安装失败怎么办？**
+A: 针对性解决方案：
+- **CodeQL失败**：检查网络连接，手动下载ZIP文件
+- **Cppcheck失败**：确保Chocolatey正常工作
+- **LSP服务器失败**：检查pip和npm环境
+- **CTags失败**：从GitHub手动下载二进制文件
+- **Cscope失败**：确保MSYS2正确安装
 
 ---
 
