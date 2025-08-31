@@ -1,0 +1,38 @@
+
+# C代码索引工具 - MCP服务器集成
+
+这个项目包含一个MCP服务器，可以为AI提供C代码分析功能。
+
+## 可用的MCP工具：
+
+1. **build_c_index** - 构建C代码索引
+   - project_path: C项目根目录
+   - force_rebuild: 是否强制重建
+
+2. **search_code_semantic** - 语义搜索代码  
+   - query: 自然语言查询
+   - symbol_type: 符号类型过滤
+   - limit: 结果数量限制
+
+3. **search_symbol_exact** - 精确搜索符号
+   - symbol_name: 确切的符号名称
+
+4. **get_project_statistics** - 获取项目统计
+
+5. **get_symbols_by_type** - 按类型获取符号
+   - symbol_type: function/structure/variable等
+
+6. **analyze_function_complexity** - 分析函数复杂度
+
+7. **get_callees** - 查询函数调用关系
+
+8. **get_callers** - 查询函数调用者
+
+## MCP服务器路径：
+D:\cursorproject\any\mcp_server_working.py
+
+## 启动方式：
+python mcp_server_working.py
+
+## 完整使用指南：
+查看 使用指南.md
