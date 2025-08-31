@@ -26,15 +26,85 @@ function Test-Command {
     return $?
 }
 
+# 函数：刷新环境变量
+function Update-Environment {
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    Write-Host "🔄 环境变量已刷新" -ForegroundColor Blue
+}
+
+# 函数：重试执行命令
+function Invoke-WithRetry {
+    param(
+        [scriptblock]$ScriptBlock,
+        [int]$MaxRetries = 3,
+        [int]$DelaySeconds = 5
+    )
+    
+    for ($i = 1; $i -le $MaxRetries; $i++) {
+        try {
+            Write-Host "🔄 尝试第 $i 次..." -ForegroundColor Yellow
+            & $ScriptBlock
+            return $true
+        } catch {
+            Write-Host "❌ 第 $i 次尝试失败: $_" -ForegroundColor Red
+            if ($i -lt $MaxRetries) {
+                Write-Host "⏳ 等待 ${DelaySeconds} 秒后重试..." -ForegroundColor Yellow
+                Start-Sleep $DelaySeconds
+            }
+        }
+    }
+    return $false
+}
+
+# 函数：检查前置依赖
+function Test-Prerequisites {
+    Write-Host "🔍 检查前置依赖..." -ForegroundColor Yellow
+    
+    $missing = @()
+    
+    # 检查PowerShell版本
+    if ($PSVersionTable.PSVersion.Major -lt 5) {
+        $missing += "PowerShell 5.0+"
+    }
+    
+    # 检查.NET Framework
+    try {
+        $dotNetVersion = Get-ItemProperty "HKLM:SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full\" -Name Release -ErrorAction Stop
+        if ($dotNetVersion.Release -lt 461808) {
+            $missing += ".NET Framework 4.7.2+"
+        }
+    } catch {
+        $missing += ".NET Framework 4.7.2+"
+    }
+    
+    if ($missing.Count -gt 0) {
+        Write-Host "❌ 缺少前置依赖:" -ForegroundColor Red
+        $missing | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+        return $false
+    }
+    
+    Write-Host "✅ 前置依赖检查通过" -ForegroundColor Green
+    return $true
+}
+
 # 函数：安装Chocolatey
 function Install-Chocolatey {
     Write-Host "📦 检查Chocolatey..." -ForegroundColor Yellow
     if (-not (Test-Command choco)) {
         Write-Host "⬇️ 安装Chocolatey..." -ForegroundColor Blue
-        Set-ExecutionPolicy Bypass -Scope Process -Force
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-        Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-        refreshenv
+        
+        $success = Invoke-WithRetry -ScriptBlock {
+            Set-ExecutionPolicy Bypass -Scope Process -Force
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+            Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+        }
+        
+        if ($success) {
+            Update-Environment
+            Write-Host "✅ Chocolatey安装完成" -ForegroundColor Green
+        } else {
+            throw "Chocolatey安装失败"
+        }
     } else {
         Write-Host "✅ Chocolatey已安装" -ForegroundColor Green
     }
@@ -46,8 +116,30 @@ function Install-PythonDependencies {
     
     # 检查Python
     if (-not (Test-Command python)) {
-        Write-Error "❌ Python未安装，请先安装Python 3.10+"
-        return $false
+        Write-Host "⬇️ 尝试通过Chocolatey安装Python..." -ForegroundColor Blue
+        try {
+            choco install python -y
+            Update-Environment
+            if (-not (Test-Command python)) {
+                Write-Error "❌ Python安装失败，请手动安装Python 3.10+"
+                return $false
+            }
+        } catch {
+            Write-Error "❌ Python自动安装失败，请手动安装Python 3.10+"
+            return $false
+        }
+    }
+    
+    # 检查pip
+    if (-not (Test-Command pip)) {
+        Write-Host "⬇️ 安装pip..." -ForegroundColor Blue
+        try {
+            python -m ensurepip --upgrade
+            Update-Environment
+        } catch {
+            Write-Error "❌ pip安装失败"
+            return $false
+        }
     }
     
     $pythonVersion = python --version 2>&1
@@ -115,36 +207,58 @@ function Install-ExternalTools {
     # 安装CodeQL (GitHub高级代码分析)
     Write-Host "📌 安装CodeQL..." -ForegroundColor Blue
     if (-not (Test-Command codeql)) {
-        try {
+        $success = Invoke-WithRetry -ScriptBlock {
             # 下载并安装CodeQL CLI
             $codeqlVersion = "2.15.4"
             $codeqlUrl = "https://github.com/github/codeql-cli-binaries/releases/download/v$codeqlVersion/codeql-win64.zip"
             $codeqlDir = "C:\tools\codeql"
             $codeqlZip = "$env:TEMP\codeql.zip"
             
+            # 创建目录
+            if (-not (Test-Path "C:\tools")) {
+                New-Item -Path "C:\tools" -ItemType Directory -Force
+            }
+            
             Write-Host "⬇️ 下载CodeQL CLI..." -ForegroundColor Blue
-            Invoke-WebRequest -Uri $codeqlUrl -OutFile $codeqlZip
+            # 使用更强大的下载方法
+            $webClient = New-Object System.Net.WebClient
+            $webClient.DownloadFile($codeqlUrl, $codeqlZip)
             
             Write-Host "📦 解压CodeQL..." -ForegroundColor Blue
             Expand-Archive -Path $codeqlZip -DestinationPath "C:\tools" -Force
             
             # 添加到PATH
-            $env:PATH += ";$codeqlDir\codeql"
-            [Environment]::SetEnvironmentVariable("PATH", $env:PATH, [EnvironmentVariableTarget]::Machine)
-            
-            # 清理临时文件
-            Remove-Item $codeqlZip -Force
-            
-            # 下载CodeQL查询包
-            Write-Host "⬇️ 下载CodeQL查询包..." -ForegroundColor Blue
-            $codeqlQueriesDir = "$codeqlDir\codeql-queries"
-            if (-not (Test-Path $codeqlQueriesDir)) {
-                git clone https://github.com/github/codeql.git $codeqlQueriesDir --depth 1
+            $codeqlBinPath = "$codeqlDir\codeql"
+            $currentPath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
+            if ($currentPath -notlike "*$codeqlBinPath*") {
+                [Environment]::SetEnvironmentVariable("PATH", "$currentPath;$codeqlBinPath", "Machine")
+                $env:PATH = "$env:PATH;$codeqlBinPath"
             }
             
+            # 清理临时文件
+            Remove-Item $codeqlZip -Force -ErrorAction SilentlyContinue
+            
+            # 验证安装
+            Update-Environment
+            if (-not (Test-Command codeql)) {
+                throw "CodeQL命令验证失败"
+            }
+        }
+        
+        if ($success) {
+            # 下载CodeQL查询包（可选，不影响主要功能）
+            try {
+                Write-Host "⬇️ 下载CodeQL查询包..." -ForegroundColor Blue
+                $codeqlQueriesDir = "C:\tools\codeql\codeql-queries"
+                if (-not (Test-Path $codeqlQueriesDir) -and (Test-Command git)) {
+                    git clone https://github.com/github/codeql.git $codeqlQueriesDir --depth 1
+                }
+            } catch {
+                Write-Host "⚠️ CodeQL查询包下载失败，但不影响主要功能" -ForegroundColor Yellow
+            }
             Write-Host "✅ CodeQL安装完成" -ForegroundColor Green
-        } catch {
-            Write-Host "❌ CodeQL安装失败: $_" -ForegroundColor Red
+        } else {
+            Write-Host "❌ CodeQL安装失败" -ForegroundColor Red
         }
     } else {
         Write-Host "✅ CodeQL已安装" -ForegroundColor Green
@@ -153,14 +267,27 @@ function Install-ExternalTools {
     # 安装其他LSP服务器
     Write-Host "📌 安装LSP服务器..." -ForegroundColor Blue
     
+    # 检查并安装Node.js（npm的前置依赖）
+    if (-not (Test-Command npm)) {
+        Write-Host "⬇️ 安装Node.js..." -ForegroundColor Blue
+        try {
+            choco install nodejs -y
+            Update-Environment
+        } catch {
+            Write-Host "❌ Node.js安装失败" -ForegroundColor Red
+        }
+    }
+    
     # Python LSP服务器
     if (-not (Get-Command "pylsp" -ErrorAction SilentlyContinue)) {
         Write-Host "⬇️ 安装Python LSP服务器..." -ForegroundColor Blue
-        try {
-            pip install python-lsp-server[all] -q
+        $success = Invoke-WithRetry -ScriptBlock {
+            pip install python-lsp-server[all] --upgrade
+        }
+        if ($success) {
             Write-Host "✅ Python LSP服务器安装完成" -ForegroundColor Green
-        } catch {
-            Write-Host "❌ Python LSP服务器安装失败: $_" -ForegroundColor Red
+        } else {
+            Write-Host "❌ Python LSP服务器安装失败" -ForegroundColor Red
         }
     } else {
         Write-Host "✅ Python LSP服务器已安装" -ForegroundColor Green
@@ -169,11 +296,18 @@ function Install-ExternalTools {
     # TypeScript/JavaScript LSP服务器
     if (-not (Get-Command "typescript-language-server" -ErrorAction SilentlyContinue)) {
         Write-Host "⬇️ 安装TypeScript LSP服务器..." -ForegroundColor Blue
-        try {
-            npm install -g typescript-language-server typescript
+        $success = Invoke-WithRetry -ScriptBlock {
+            if (Test-Command npm) {
+                npm install -g typescript-language-server typescript
+            } else {
+                throw "npm不可用"
+            }
+        }
+        if ($success) {
+            Update-Environment
             Write-Host "✅ TypeScript LSP服务器安装完成" -ForegroundColor Green
-        } catch {
-            Write-Host "❌ TypeScript LSP服务器安装失败: $_" -ForegroundColor Red
+        } else {
+            Write-Host "❌ TypeScript LSP服务器安装失败" -ForegroundColor Red
         }
     } else {
         Write-Host "✅ TypeScript LSP服务器已安装" -ForegroundColor Green
@@ -206,9 +340,14 @@ function Install-ExternalTools {
         }
         
         if ($bashPath) {
-            try {
+            $success = Invoke-WithRetry -ScriptBlock {
+                # 更新MSYS2包管理器
+                & $bashPath -lc "pacman -Sy --noconfirm"
+                # 安装cscope
                 & $bashPath -lc "pacman -S --noconfirm cscope"
-                
+            }
+            
+            if ($success) {
                 # 自动添加到PATH
                 $msys2BinPath = Split-Path $bashPath
                 $currentPath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
@@ -218,9 +357,16 @@ function Install-ExternalTools {
                     $env:PATH = "$env:PATH;$msys2BinPath"
                     Write-Host "✅ 已添加到系统PATH: $msys2BinPath" -ForegroundColor Green
                 }
-                Write-Host "✅ Cscope安装完成" -ForegroundColor Green
-            } catch {
-                Write-Host "❌ Cscope安装失败: $_" -ForegroundColor Red
+                
+                # 验证cscope安装
+                Update-Environment
+                if (Test-Command cscope) {
+                    Write-Host "✅ Cscope安装完成" -ForegroundColor Green
+                } else {
+                    throw "Cscope安装验证失败"
+                }
+            } else {
+                Write-Host "❌ Cscope安装失败" -ForegroundColor Red
             }
         } else {
             Write-Host "❌ 找不到MSYS2 bash" -ForegroundColor Red
@@ -231,7 +377,7 @@ function Install-ExternalTools {
 }
 
 # 函数：验证安装
-function Test-Installation {
+function Verify-Installation {
     Write-Host "🔍 验证安装..." -ForegroundColor Yellow
     
     $allGood = $true
@@ -308,25 +454,22 @@ function Test-Installation {
     return $allGood
 }
 
-# 主安装流程
+# 主程序开始
+Write-Host ""
+
+# 检查前置依赖
+if (-not (Test-Prerequisites)) {
+    Write-Error "❌ 前置依赖检查失败，请先安装必需的软件"
+    exit 1
+}
+
+Write-Host "🔍 检查管理员权限..." -ForegroundColor Yellow
+if (-not (Test-AdminRights)) {
+    Write-Error "❌ 需要管理员权限才能安装工具。请以管理员身份运行PowerShell。"
+    exit 1
+}
+
 try {
-    Write-Host "🔍 系统检查..." -ForegroundColor Yellow
-    
-    # 检查PowerShell版本
-    $psVersion = $PSVersionTable.PSVersion
-    Write-Host "📍 PowerShell版本: $psVersion" -ForegroundColor Cyan
-    
-    # 检查管理员权限
-    if (-not (Test-AdminRights)) {
-        Write-Host "⚠️ 建议以管理员身份运行以避免权限问题" -ForegroundColor Yellow
-        if (-not $Force) {
-            $response = Read-Host "继续安装? (y/N)"
-            if ($response -ne 'y' -and $response -ne 'Y') {
-                Write-Host "❌ 安装取消" -ForegroundColor Red
-                exit 1
-            }
-        }
-    }
     
     # 安装Chocolatey
     if (-not $SkipTools) {
@@ -375,25 +518,39 @@ try {
         refreshenv
     }
     
-    # 验证安装
-    Write-Host "🔍 最终验证..." -ForegroundColor Yellow
-    $installSuccess = Test-Installation
+    # 最终环境变量刷新
+    Write-Host "🔄 刷新环境变量..." -ForegroundColor Blue
+    Update-Environment
     
-    if ($installSuccess) {
+    # 运行最终验证
+    Write-Host ""
+    Write-Host "🔍 运行最终验证..." -ForegroundColor Yellow
+    
+    # 等待一下让系统稳定
+    Start-Sleep 2
+    
+    if (Verify-Installation) {
         Write-Host ""
-        Write-Host "🎉 安装完成！" -ForegroundColor Green
-        Write-Host "=====================================" -ForegroundColor Green
-        Write-Host "✅ 所有组件已成功安装并验证" -ForegroundColor Green
+        Write-Host "🎉 安装完成！所有工具都已成功安装。" -ForegroundColor Green
         Write-Host ""
-        Write-Host "🚀 快速开始：" -ForegroundColor Cyan
-        Write-Host "   python mcp_server_working.py" -ForegroundColor White
+        Write-Host "📋 安装的工具列表:" -ForegroundColor Cyan
+        Write-Host "  ✅ CodeQL - GitHub高级代码分析" -ForegroundColor Green
+        Write-Host "  ✅ Cppcheck - C/C++静态分析" -ForegroundColor Green
+        Write-Host "  ✅ Python LSP - Python语言服务器" -ForegroundColor Green
+        Write-Host "  ✅ TypeScript LSP - JS/TS语言服务器" -ForegroundColor Green
+        Write-Host "  ✅ Clangd LSP - C/C++语言服务器" -ForegroundColor Green
+        Write-Host "  ✅ Universal CTags - 符号提取" -ForegroundColor Green
+        Write-Host "  ✅ Cscope - 调用关系分析" -ForegroundColor Green
         Write-Host ""
-        Write-Host "📖 详细文档：请查看 README.md" -ForegroundColor Cyan
+        Write-Host "🚀 下一步: 运行 'python mcp_server_working.py' 启动MCP服务器" -ForegroundColor Cyan
+        Write-Host "💡 提示：重启PowerShell窗口以确保所有环境变量生效。" -ForegroundColor Blue
     } else {
         Write-Host ""
-        Write-Host "❌ 安装未完全成功" -ForegroundColor Red
-        Write-Host "请检查上面的错误信息并手动解决" -ForegroundColor Yellow
-        exit 1
+        Write-Host "⚠️ 安装完成，但某些工具验证失败。" -ForegroundColor Yellow
+        Write-Host "🔧 解决方案:" -ForegroundColor Cyan
+        Write-Host "  1. 重启PowerShell窗口" -ForegroundColor White
+        Write-Host "  2. 运行 'python install.py' 重新验证" -ForegroundColor White
+        Write-Host "  3. 手动检查失败的工具安装" -ForegroundColor White
     }
     
 } catch {
