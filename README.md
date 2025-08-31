@@ -88,9 +88,14 @@ choco install universal-ctags
 ```powershell
 # 通过MSYS2安装
 choco install msys2
+#
+# 方法2: 直接下载预编译包
+# 1. 下载cscope预编译包
+# 链接: https://mirror.msys2.org/msys/x86_64/cscope-15.9-2-x86_64.pkg.tar.zst
 
-# 在MSYS2终端中执行：
-# pacman -S cscope
+# 2. 在MSYS2中手动安装
+# 打开MSYS2终端，执行：
+#pacman -U cscope-15.9-2-x86_64.pkg.tar.zst
 
 # 添加MSYS2到PATH：C:\msys64\usr\bin
 ```
