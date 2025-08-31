@@ -1,14 +1,14 @@
 # 核心依赖
-loguru==0.7.2
+loguru>=0.7.2
 typing-extensions>=4.0.0
 
-# 向量数据库和搜索
-chromadb==0.4.15
-sentence-transformers==2.2.2
+# 向量数据库和搜索 - 兼容版本
+chromadb>=0.4.15
+sentence-transformers>=2.2.2
 numpy>=1.21.0
 pandas>=1.3.0
 
-# 树形语法分析
+# 树形语法分析 - 更新到兼容版本
 tree-sitter>=0.20.0
 tree-sitter-languages>=1.7.0
 
@@ -17,16 +17,19 @@ clang>=15.0.0  # Python bindings for clang
 lizard>=1.17.0  # 代码复杂度分析
 pyyaml>=6.0  # YAML配置文件支持
 
-# 新增：成熟开源工具集成
+# 成熟开源工具集成 - 兼容版本
 semgrep>=1.45.0  # Semgrep静态分析工具
 python-lsp-server>=1.7.0  # Python LSP服务器
-asyncio-lsp>=0.3.0  # LSP客户端异步支持
+pygls>=1.3.0  # LSP客户端异步支持
+lsprotocol>=2023.0.1  # LSP协议实现
 xmltodict>=0.13.0  # XML解析支持（用于Cppcheck输出）
 
-# Web服务器和API
-fastapi==0.104.1
-uvicorn==0.24.0
-python-multipart==0.0.6
+# Web服务器和API - 更新到兼容版本
+fastapi>=0.115.0  # 兼容mcp-feedback-enhanced
+uvicorn>=0.31.1  # 兼容mcp
+python-multipart>=0.0.9  # 兼容mcp
+anyio>=4.5  # 兼容mcp
+rich>=14.0.0  # 兼容多个包
 
 # Windows兼容性
 pywin32>=306; sys_platform == "win32"

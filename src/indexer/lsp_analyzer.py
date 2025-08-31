@@ -22,11 +22,12 @@ from dataclasses import dataclass
 from loguru import logger
 
 try:
-    import asyncio_lsp
+    from pygls.client import LanguageClient
+    from lsprotocol import types as lsp_types
     LSP_AVAILABLE = True
 except ImportError:
     LSP_AVAILABLE = False
-    logger.warning("python-lsp-client 未安装，LSP功能不可用")
+    logger.warning("pygls 或 lsprotocol 未安装，LSP功能不可用")
 
 
 @dataclass
