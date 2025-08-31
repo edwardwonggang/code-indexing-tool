@@ -218,6 +218,68 @@ def install_windows_tools():
                 os.environ['PATH'] = os.environ.get('PATH', '') + ";" + path
         print("✅ 当前会话PATH已更新")
     
+    # 安装 TypeScript LSP
+    if check_command_exists("npm"):
+        # 先检查 TypeScript LSP 是否已安装
+        if check_command_exists("typescript-language-server"):
+            print("✅ TypeScript LSP 已安装")
+        else:
+            print("📌 安装 TypeScript Language Server...")
+            
+            # 先配置 npm 镜像源
+            print("🔧 配置 npm 镜像源...")
+            success, stdout, stderr = run_command("npm config set registry https://artnj.zte.com.cn/artifactory/api/npm/public-npm-remote/")
+            if success:
+                print("✅ npm 镜像源配置成功")
+            else:
+                print(f"⚠️ npm 镜像源配置失败，使用默认源: {stderr}")
+            
+            # 安装 TypeScript LSP
+            success, stdout, stderr = run_command("npm install -g typescript-language-server typescript")
+            if success:
+                print("✅ TypeScript LSP 安装完成")
+            else:
+                print(f"⚠️ TypeScript LSP 安装失败: {stderr}")
+    else:
+        print("⚠️ 需要先安装 Node.js 才能安装 TypeScript LSP")
+        print("💡 可以执行: choco install nodejs")
+    
+    # 安装 CodeQL
+    if not check_command_exists("codeql"):
+        print("📌 安装 CodeQL...")
+        try:
+            # 下载并安装 CodeQL CLI
+            codeql_version = "2.15.4"
+            codeql_url = f"https://github.com/github/codeql-cli-binaries/releases/download/v{codeql_version}/codeql-win64.zip"
+            codeql_dir = Path("C:/tools/codeql")
+            codeql_zip = Path(os.environ.get('TEMP', '')) / "codeql.zip"
+            
+            print(f"📥 下载 CodeQL v{codeql_version}...")
+            import urllib.request
+            urllib.request.urlretrieve(codeql_url, codeql_zip)
+            
+            print("📦 解压 CodeQL...")
+            import zipfile
+            with zipfile.ZipFile(codeql_zip, 'r') as zip_ref:
+                zip_ref.extractall("C:/tools")
+            
+            # 添加到 PATH
+            codeql_bin = codeql_dir / "codeql"
+            if codeql_bin.exists():
+                paths_to_add.append(str(codeql_bin))
+                add_to_path_windows(str(codeql_bin))
+                print("✅ CodeQL 安装完成")
+            
+            # 清理临时文件
+            if codeql_zip.exists():
+                codeql_zip.unlink()
+                
+        except Exception as e:
+            print(f"⚠️ CodeQL 安装失败: {e}")
+            print("💡 可以手动从 GitHub 下载: https://github.com/github/codeql-cli-binaries/releases")
+    else:
+        print("✅ CodeQL 已安装")
+    
     return True
 
 
@@ -309,8 +371,6 @@ def verify_installation():
         # LSP服务器检查
         tools.append(("pylsp", "Python LSP"))
         tools.append(("typescript-language-server", "TypeScript LSP"))
-    else:
-        
     
     for cmd, name in tools:
         if check_command_exists(cmd):
