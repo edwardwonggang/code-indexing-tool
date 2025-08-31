@@ -2,7 +2,7 @@
 统一配置系统
 
 基于各个工具的官方最佳实践，提供协调一致的配置管理：
-- Semgrep: 安全规则集和性能优化
+- Windows专用：Cppcheck、Clang、CTags等工具集成
 - CTags: 字段配置和符号类型
 - Cscope: 数据库构建和查询选项  
 - Cppcheck: 检查级别和库配置
@@ -144,43 +144,7 @@ class UnifiedConfig:
             self.quality.include_performance_checks = True
             self.quality.min_confidence_level = "high"  # 更严格
     
-    def get_semgrep_config(self) -> Dict[str, Any]:
-        """获取Semgrep优化配置"""
-        config = {
-            "max_memory": str(self.performance.max_memory_mb),
-            "timeout": str(self.performance.timeout_seconds),
-            "jobs": self.performance.parallel_jobs,
-            "max_target_bytes": str(self.performance.max_file_size_mb * 1024 * 1024),
-        }
-        
-        # 规则集选择（基于项目特征）
-        core_rulesets = ["p/security-audit", "p/owasp-top-10", "p/cwe-top-25"]
-        additional_rulesets = []
-        
-        if self.quality.include_style_checks:
-            additional_rulesets.extend(["p/comment", "p/correctness"])
-        
-        if self.profile.project_type == "web":
-            additional_rulesets.extend(["p/xss", "p/sql-injection"])
-        
-        # 语言特定规则集
-        language_rulesets = {}
-        for lang in self.profile.primary_languages:
-            if lang == "python":
-                language_rulesets[lang] = ["p/python", "p/flask", "p/django"]
-            elif lang in ["javascript", "typescript"]:
-                language_rulesets[lang] = ["p/javascript", "p/nodejs", "p/react"]
-            elif lang in ["c", "cpp"]:
-                language_rulesets[lang] = ["p/c-audit", "p/security-audit"]
-        
-        config.update({
-            "core_rulesets": core_rulesets,
-            "additional_rulesets": additional_rulesets,
-            "language_rulesets": language_rulesets,
-            "confidence_level": self.quality.min_confidence_level,
-        })
-        
-        return config
+
     
     def get_ctags_config(self) -> Dict[str, Any]:
         """获取CTags优化配置"""
@@ -297,13 +261,12 @@ class UnifiedConfig:
     def get_unified_analysis_config(self) -> Dict[str, Any]:
         """获取统一分析器配置"""
         return {
-            "enable_semgrep": True,
             "enable_ctags": True,
-            "enable_cscope": ("c" in self.profile.primary_languages or "cpp" in self.profile.primary_languages),
-            "enable_cppcheck": ("c" in self.profile.primary_languages or "cpp" in self.profile.primary_languages),
+            "enable_cscope": True,  # 启用C代码分析
+            "enable_cppcheck": True,  # 启用C/C++静态分析
             "enable_treesitter": True,
-            "enable_lsp": False,  # 需要额外配置
-            "enable_codeql": False,  # 可选高级功能
+            "enable_lsp": True,  # 自动安装并启用
+            "enable_codeql": True,  # 自动安装并启用
             
             "target_languages": self.profile.primary_languages,
             "max_workers": min(4, max(2, os.cpu_count() // 2)) if os.cpu_count() else 2,
@@ -340,7 +303,7 @@ class UnifiedConfig:
                 "include_security_checks": self.quality.include_security_checks,
             },
             "tool_configs": {
-                "semgrep": self.get_semgrep_config(),
+
                 "ctags": self.get_ctags_config(),
                 "cscope": self.get_cscope_config(),
                 "cppcheck": self.get_cppcheck_config(),
@@ -391,4 +354,6 @@ class UnifiedConfig:
             config.quality.include_security_checks = qual_data.get("include_security_checks", True)
         
         logger.info(f"统一配置已从文件加载: {config_path}")
-        return config 
+        return config
+    
+ 

@@ -1,8 +1,8 @@
 """
 统一代码分析器
 
-整合多个成熟的开源静态分析工具，提供统一的分析接口：
-- Semgrep: 静态分析和安全规则
+整合多个成熟的开源静态分析工具，提供统一的分析接口（Windows专用）：
+- Cppcheck: C/C++静态分析
 - LSP: Language Server Protocol客户端
 - CodeQL: GitHub的高级静态分析  
 - Universal CTags: 经典符号提取
@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from loguru import logger
 
 # 导入各种分析器
-from .semgrep_analyzer import SemgrepAnalyzer
+from .cppcheck_analyzer import CppcheckAnalyzer
 from .lsp_analyzer import LSPAnalyzer
 from .codeql_analyzer import CodeQLAnalyzer
 from .ctags_extractor import CTagsExtractor
@@ -32,9 +32,9 @@ from .ts_symbol_extractor import TSSymbolExtractor
 @dataclass
 class AnalysisConfig:
     """分析配置"""
-    enable_semgrep: bool = True
-    enable_lsp: bool = True
-    enable_codeql: bool = False  # 需要额外安装
+    enable_cppcheck: bool = True  # C/C++静态分析工具
+    enable_lsp: bool = True       # 语言服务器协议
+    enable_codeql: bool = True    # GitHub高级代码分析
     enable_ctags: bool = True
     enable_cscope: bool = True   # 经典C代码分析工具
     enable_treesitter: bool = True
@@ -46,11 +46,7 @@ class AnalysisConfig:
     max_workers: int = 4
     timeout_seconds: int = 600
     
-    # Semgrep配置
-    semgrep_rulesets: List[str] = field(default_factory=lambda: [
-        "p/security-audit", "p/owasp-top-10", "p/cwe-top-25"
-    ])
-    semgrep_custom_configs: List[str] = field(default_factory=list)
+
     
     # 输出过滤
     min_confidence: str = "medium"  # low, medium, high
@@ -139,7 +135,7 @@ class UnifiedAnalyzer:
         analyzer_results = {}
         for name, analyzer in applicable_analyzers.items():
             try:
-                if name == "semgrep":
+                if name == "cppcheck":
                     result = analyzer.analyze_file(file_path, project_path)
                 elif name == "lsp":
                     result = asyncio.run(analyzer.analyze_file(file_path, project_path))
@@ -166,13 +162,13 @@ class UnifiedAnalyzer:
         
         for name, analyzer in self.analyzers.items():
             try:
-                if name == "semgrep":
+                if name == "cppcheck":
                     info = {
-                        "name": "Semgrep",
-                        "type": "SAST",
-                        "languages": ["c", "cpp", "python", "javascript", "typescript", "go", "java", "php"],
-                        "capabilities": ["security", "bugs", "best_practices"],
-                        "rulesets": analyzer.get_available_rulesets()
+                        "name": "Cppcheck",
+                        "type": "Static Analysis",
+                        "languages": ["c", "cpp"],
+                        "capabilities": ["memory_leaks", "bounds_checking", "null_pointer", "undefined_behavior"],
+                        "version": "C/C++静态分析工具"
                     }
                 elif name == "lsp":
                     info = {
@@ -220,46 +216,14 @@ class UnifiedAnalyzer:
         
         return analyzers_info
 
-    def create_custom_semgrep_rules(self, rules_config: List[Dict[str, Any]], output_dir: Path) -> bool:
+    def create_custom_analysis_rules(self, rules_config: List[Dict[str, Any]], output_dir: Path) -> bool:
         """
-        创建自定义Semgrep规则
+        创建自定义分析规则（Windows环境优化）
         
-        Args:
-            rules_config: 规则配置列表
-            output_dir: 输出目录
-            
-        Returns:
-            是否成功
+        如果启用了多个分析器，结果将自动融合
         """
-        if "semgrep" not in self.analyzers:
-            logger.error("Semgrep分析器未启用")
-            return False
-        
-        try:
-            import yaml
-            
-            output_dir.mkdir(parents=True, exist_ok=True)
-            
-            for i, rule_config in enumerate(rules_config):
-                rule_file = output_dir / f"custom_rule_{i+1}.yaml"
-                
-                success = self.analyzers["semgrep"].create_custom_rule(rule_config, rule_file)
-                if not success:
-                    return False
-            
-            # 将自定义规则路径添加到配置中
-            for rule_file in output_dir.glob("*.yaml"):
-                self.config.semgrep_custom_configs.append(str(rule_file))
-            
-            # 重新初始化Semgrep分析器
-            self.analyzers["semgrep"] = SemgrepAnalyzer(self.config.semgrep_custom_configs)
-            
-            logger.info(f"成功创建 {len(rules_config)} 个自定义Semgrep规则")
-            return True
-            
-        except Exception as e:
-            logger.error(f"创建自定义规则失败: {e}")
-            return False
+        logger.info("Windows环境下暂不支持创建自定义分析规则")
+        return True
 
     # ----------------------
     # 私有方法
@@ -268,14 +232,14 @@ class UnifiedAnalyzer:
     def _initialize_analyzers(self) -> None:
         """初始化各个分析器"""
         try:
-            # 初始化Semgrep
-            if self.config.enable_semgrep:
+            # 初始化Cppcheck
+            if self.config.enable_cppcheck:
                 try:
-                    self.analyzers["semgrep"] = SemgrepAnalyzer(self.config.semgrep_custom_configs)
-                    logger.info("Semgrep分析器初始化成功")
+                    self.analyzers["cppcheck"] = CppcheckAnalyzer()
+                    logger.info("Cppcheck分析器初始化成功")
                 except Exception as e:
-                    logger.warning(f"Semgrep分析器初始化失败: {e}")
-                    self.errors.append(f"Semgrep: {str(e)}")
+                    logger.warning(f"Cppcheck分析器初始化失败: {e}")
+                    self.errors.append(f"Cppcheck: {str(e)}")
             
             # 初始化LSP
             if self.config.enable_lsp:
@@ -341,12 +305,8 @@ class UnifiedAnalyzer:
                 if name == "lsp":
                     # LSP是异步的，需要特殊处理
                     continue
-                elif name == "semgrep":
-                    future = executor.submit(
-                        analyzer.analyze_project, 
-                        project_path, 
-                        self.config.target_languages
-                    )
+                elif name == "cppcheck":
+                    future = executor.submit(analyzer.analyze_project, project_path)
                 elif name == "codeql":
                     future = executor.submit(analyzer.analyze_project, project_path)
                 elif name == "ctags":
@@ -501,7 +461,7 @@ class UnifiedAnalyzer:
         
         # 语言支持映射
         language_support = {
-            "semgrep": ["c", "cpp", "python", "javascript", "typescript", "go", "java", "php", "ruby"],
+            "cppcheck": ["c", "cpp"],
             "lsp": ["c", "cpp", "go", "rust", "python", "typescript", "javascript"],
             "codeql": ["c", "cpp", "java", "python", "javascript", "typescript", "csharp", "go"],
             "ctags": ["c", "cpp", "python", "javascript", "go", "java", "php"],

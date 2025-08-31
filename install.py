@@ -15,13 +15,18 @@ from pathlib import Path
 def run_command(cmd, shell=False, check=True):
     """运行命令并返回结果"""
     try:
+        # Windows编码兼容性
+        encoding = 'utf-8' if platform.system() != 'Windows' else 'gbk'
+        
         if isinstance(cmd, str):
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=check)
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, 
+                                  check=check, encoding=encoding, errors='replace')
         else:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=check, shell=shell)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=check, 
+                                  shell=shell, encoding=encoding, errors='replace')
         return result.returncode == 0, result.stdout, result.stderr
     except subprocess.CalledProcessError as e:
-        return False, e.stdout, e.stderr
+        return False, e.stdout if e.stdout else "", e.stderr if e.stderr else ""
     except Exception as e:
         return False, "", str(e)
 
@@ -69,6 +74,68 @@ def install_python_dependencies():
     return True
 
 
+def add_to_path_windows(path_to_add):
+    """在Windows上添加路径到系统PATH"""
+    try:
+        import winreg
+        
+        # 读取当前系统PATH
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
+            current_path, _ = winreg.QueryValueEx(key, "PATH")
+        
+        # 检查路径是否已存在
+        if path_to_add.lower() in current_path.lower():
+            print(f"✅ 路径已存在于PATH中: {path_to_add}")
+            return True
+        
+        # 添加新路径
+        new_path = current_path + ";" + path_to_add
+        
+        # 写入注册表
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, "PATH", 0, winreg.REG_EXPAND_SZ, new_path)
+        
+        # 更新当前进程的环境变量
+        os.environ['PATH'] = os.environ.get('PATH', '') + ";" + path_to_add
+        
+        print(f"✅ 已添加到系统PATH: {path_to_add}")
+        return True
+    except Exception as e:
+        print(f"❌ 添加PATH失败: {e}")
+        print(f"⚠️ 请手动将 {path_to_add} 添加到系统PATH")
+        return False
+
+
+def refresh_path_windows():
+    """刷新Windows PATH环境变量"""
+    try:
+        # 广播环境变量更改消息
+        import ctypes
+        from ctypes import wintypes
+        
+        HWND_BROADCAST = 0xFFFF
+        WM_SETTINGCHANGE = 0x001A
+        SMTO_ABORTIFHUNG = 0x0002
+        
+        result = ctypes.windll.user32.SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            "Environment",
+            SMTO_ABORTIFHUNG,
+            5000,
+            ctypes.byref(wintypes.DWORD())
+        )
+        
+        if result:
+            print("✅ 环境变量已刷新")
+        else:
+            print("⚠️ 环境变量刷新可能未完成，建议重启终端")
+            
+    except Exception as e:
+        print(f"⚠️ 环境变量刷新失败: {e}")
+
+
 def install_windows_tools():
     """安装Windows工具"""
     print("🔧 安装Windows外部工具...")
@@ -83,8 +150,11 @@ def install_windows_tools():
     tools = [
         ("universal-ctags", "ctags"),
         ("llvm", "clangd"),
+        ("cppcheck", "cppcheck"),  # C/C++静态分析工具
         ("msys2", None)  # msys2需要特殊处理
     ]
+    
+    paths_to_add = []
     
     for package, command in tools:
         if command and check_command_exists(command):
@@ -95,6 +165,12 @@ def install_windows_tools():
         success, stdout, stderr = run_command(f"choco install {package} -y")
         if success:
             print(f"✅ {package}安装完成")
+            
+            # 收集需要添加到PATH的路径
+            if package == "llvm":
+                paths_to_add.append(r"C:\Program Files\LLVM\bin")
+            elif package == "cppcheck":
+                paths_to_add.append(r"C:\Program Files\Cppcheck")
         else:
             print(f"❌ {package}安装失败: {stderr}")
     
@@ -117,13 +193,30 @@ def install_windows_tools():
             if success:
                 print("✅ Cscope安装完成")
                 
-                # 添加到PATH提示
-                msys2_bin = Path(bash_path).parent
-                print(f"⚠️ 请将 {msys2_bin} 添加到系统PATH环境变量")
+                # 添加MSYS2路径
+                msys2_bin = str(Path(bash_path).parent)
+                paths_to_add.append(msys2_bin)
             else:
                 print(f"❌ Cscope安装失败: {stderr}")
         else:
             print("❌ 找不到MSYS2 bash")
+    
+    # 自动添加所有路径到系统PATH
+    if paths_to_add:
+        print("🔄 更新系统PATH环境变量...")
+        for path in paths_to_add:
+            if Path(path).exists():
+                add_to_path_windows(path)
+        
+        # 刷新环境变量
+        refresh_path_windows()
+        
+        # 立即更新当前会话的PATH
+        print("🔄 刷新当前会话PATH...")
+        for path in paths_to_add:
+            if Path(path).exists() and path not in os.environ.get('PATH', ''):
+                os.environ['PATH'] = os.environ.get('PATH', '') + ";" + path
+        print("✅ 当前会话PATH已更新")
     
     return True
 
@@ -208,6 +301,16 @@ def verify_installation():
         ("cscope", "Cscope"),
         ("clangd", "Clangd")
     ]
+    
+    # Windows特定工具
+    if platform.system() == "Windows":
+        tools.append(("cppcheck", "Cppcheck"))
+        tools.append(("codeql", "CodeQL"))
+        # LSP服务器检查
+        tools.append(("pylsp", "Python LSP"))
+        tools.append(("typescript-language-server", "TypeScript LSP"))
+    else:
+        
     
     for cmd, name in tools:
         if check_command_exists(cmd):

@@ -99,6 +99,86 @@ function Install-ExternalTools {
         Write-Host "✅ LLVM (clangd)已安装" -ForegroundColor Green
     }
     
+    # 安装Cppcheck (C/C++静态分析)
+    Write-Host "📌 安装Cppcheck..." -ForegroundColor Blue
+    if (-not (Test-Command cppcheck)) {
+        try {
+            choco install cppcheck -y
+            Write-Host "✅ Cppcheck安装完成" -ForegroundColor Green
+        } catch {
+            Write-Host "❌ Cppcheck安装失败: $_" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "✅ Cppcheck已安装" -ForegroundColor Green
+    }
+    
+    # 安装CodeQL (GitHub高级代码分析)
+    Write-Host "📌 安装CodeQL..." -ForegroundColor Blue
+    if (-not (Test-Command codeql)) {
+        try {
+            # 下载并安装CodeQL CLI
+            $codeqlVersion = "2.15.4"
+            $codeqlUrl = "https://github.com/github/codeql-cli-binaries/releases/download/v$codeqlVersion/codeql-win64.zip"
+            $codeqlDir = "C:\tools\codeql"
+            $codeqlZip = "$env:TEMP\codeql.zip"
+            
+            Write-Host "⬇️ 下载CodeQL CLI..." -ForegroundColor Blue
+            Invoke-WebRequest -Uri $codeqlUrl -OutFile $codeqlZip
+            
+            Write-Host "📦 解压CodeQL..." -ForegroundColor Blue
+            Expand-Archive -Path $codeqlZip -DestinationPath "C:\tools" -Force
+            
+            # 添加到PATH
+            $env:PATH += ";$codeqlDir\codeql"
+            [Environment]::SetEnvironmentVariable("PATH", $env:PATH, [EnvironmentVariableTarget]::Machine)
+            
+            # 清理临时文件
+            Remove-Item $codeqlZip -Force
+            
+            # 下载CodeQL查询包
+            Write-Host "⬇️ 下载CodeQL查询包..." -ForegroundColor Blue
+            $codeqlQueriesDir = "$codeqlDir\codeql-queries"
+            if (-not (Test-Path $codeqlQueriesDir)) {
+                git clone https://github.com/github/codeql.git $codeqlQueriesDir --depth 1
+            }
+            
+            Write-Host "✅ CodeQL安装完成" -ForegroundColor Green
+        } catch {
+            Write-Host "❌ CodeQL安装失败: $_" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "✅ CodeQL已安装" -ForegroundColor Green
+    }
+    
+    # 安装其他LSP服务器
+    Write-Host "📌 安装LSP服务器..." -ForegroundColor Blue
+    
+    # Python LSP服务器
+    if (-not (Get-Command "pylsp" -ErrorAction SilentlyContinue)) {
+        Write-Host "⬇️ 安装Python LSP服务器..." -ForegroundColor Blue
+        try {
+            pip install python-lsp-server[all] -q
+            Write-Host "✅ Python LSP服务器安装完成" -ForegroundColor Green
+        } catch {
+            Write-Host "❌ Python LSP服务器安装失败: $_" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "✅ Python LSP服务器已安装" -ForegroundColor Green
+    }
+    
+    # TypeScript/JavaScript LSP服务器
+    if (-not (Get-Command "typescript-language-server" -ErrorAction SilentlyContinue)) {
+        Write-Host "⬇️ 安装TypeScript LSP服务器..." -ForegroundColor Blue
+        try {
+            npm install -g typescript-language-server typescript
+            Write-Host "✅ TypeScript LSP服务器安装完成" -ForegroundColor Green
+        } catch {
+            Write-Host "❌ TypeScript LSP服务器安装失败: $_" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "✅ TypeScript LSP服务器已安装" -ForegroundColor Green
+    }
+    
     # 安装MSYS2 (用于cscope)
     Write-Host "📌 检查MSYS2..." -ForegroundColor Blue
     if (-not (Test-Command cscope)) {
@@ -129,12 +209,14 @@ function Install-ExternalTools {
             try {
                 & $bashPath -lc "pacman -S --noconfirm cscope"
                 
-                # 添加到PATH
+                # 自动添加到PATH
                 $msys2BinPath = Split-Path $bashPath
                 $currentPath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
                 if ($currentPath -notlike "*$msys2BinPath*") {
+                    Write-Host "🔄 添加MSYS2到系统PATH..." -ForegroundColor Blue
                     [Environment]::SetEnvironmentVariable("PATH", "$currentPath;$msys2BinPath", "Machine")
                     $env:PATH = "$env:PATH;$msys2BinPath"
+                    Write-Host "✅ 已添加到系统PATH: $msys2BinPath" -ForegroundColor Green
                 }
                 Write-Host "✅ Cscope安装完成" -ForegroundColor Green
             } catch {
@@ -193,6 +275,36 @@ function Test-Installation {
         $allGood = $false
     }
     
+    if (Test-Command codeql) {
+        $codeqlVersion = codeql version 2>&1 | Select-Object -First 1
+        Write-Host "✅ CodeQL: $codeqlVersion" -ForegroundColor Green
+    } else {
+        Write-Host "❌ CodeQL未找到" -ForegroundColor Red
+        $allGood = $false
+    }
+    
+    if (Test-Command pylsp) {
+        Write-Host "✅ Python LSP服务器已安装" -ForegroundColor Green
+    } else {
+        Write-Host "❌ Python LSP服务器未找到" -ForegroundColor Red
+        $allGood = $false
+    }
+    
+    if (Test-Command typescript-language-server) {
+        Write-Host "✅ TypeScript LSP服务器已安装" -ForegroundColor Green
+    } else {
+        Write-Host "❌ TypeScript LSP服务器未找到" -ForegroundColor Red
+        $allGood = $false
+    }
+    
+    if (Test-Command cppcheck) {
+        $cppcheckVersion = cppcheck --version 2>&1 | Select-Object -First 1
+        Write-Host "✅ Cppcheck: $cppcheckVersion" -ForegroundColor Green
+    } else {
+        Write-Host "❌ Cppcheck未找到" -ForegroundColor Red
+        $allGood = $false
+    }
+    
     return $allGood
 }
 
@@ -233,6 +345,30 @@ try {
     # 安装外部工具
     if (-not $SkipTools) {
         Install-ExternalTools
+        
+        # 自动添加常用工具路径到PATH
+        Write-Host "🔄 更新系统PATH环境变量..." -ForegroundColor Blue
+        $pathsToAdd = @(
+            "C:\Program Files\LLVM\bin",
+            "C:\Program Files\Cppcheck"
+        )
+        
+        $currentPath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
+        $pathUpdated = $false
+        
+        foreach ($newPath in $pathsToAdd) {
+            if ((Test-Path $newPath) -and ($currentPath -notlike "*$newPath*")) {
+                Write-Host "➕ 添加到PATH: $newPath" -ForegroundColor Cyan
+                $currentPath += ";$newPath"
+                $env:PATH += ";$newPath"
+                $pathUpdated = $true
+            }
+        }
+        
+        if ($pathUpdated) {
+            [Environment]::SetEnvironmentVariable("PATH", $currentPath, "Machine")
+            Write-Host "✅ PATH环境变量已更新" -ForegroundColor Green
+        }
         
         # 刷新环境变量
         Write-Host "🔄 刷新环境变量..." -ForegroundColor Blue
