@@ -156,6 +156,39 @@ async def handle_list_tools() -> list[Tool]:
                 },
                 "required": ["symbol_id"]
             }
+        ),
+        Tool(
+            name="smart_query_index",
+            description="智能查询代码索引 - 大模型专用快速查询接口",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "index_dir": {
+                        "type": "string",
+                        "description": "索引目录路径"
+                    },
+                    "query_type": {
+                        "type": "string",
+                        "description": "查询类型",
+                        "enum": ["overview", "search", "function_details", "file_symbols", "by_type", "findings", "stats", "location"]
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "查询内容"
+                    },
+                    "symbol_type": {
+                        "type": "string",
+                        "description": "符号类型过滤",
+                        "enum": ["function", "structure", "variable", "macro"]
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "结果数量限制",
+                        "default": 20
+                    }
+                },
+                "required": ["index_dir", "query_type"]
+            }
         )
     ]
 
@@ -179,6 +212,8 @@ async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent
             return await get_callees(arguments)
         elif name == "get_callers":
             return await get_callers(arguments)
+        elif name == "smart_query_index":
+            return await smart_query_index(arguments)
         else:
             raise ValueError(f"Unknown tool: {name}")
             
@@ -189,43 +224,100 @@ async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent
         )]
 
 async def build_c_index(args: dict) -> list[types.TextContent]:
-    """构建C代码索引"""
+    """构建C代码索引 - 使用高效并行分析引擎"""
     project_path = args["project_path"]
     force_rebuild = args.get("force_rebuild", False)
-    
+
     if not Path(project_path).exists():
         return [types.TextContent(
             type="text",
             text=f"❌ 错误: 项目路径不存在: {project_path}"
         )]
-    
+
     try:
-        # 尝试使用真实的索引器
+        # 使用新的高效索引器
         try:
-            from src.indexer import CCodeIndexer
-            from src.utils import Config
+            from src.indexer.efficient_c_indexer import EfficientCIndexer
+            from src.utils.progress_tracker import get_progress_tracker
+
+            # 创建索引器
+            indexer = EfficientCIndexer()
+
+            # 进度消息收集
+            progress_messages = []
+            last_message_time = time.time()
+
+            def progress_callback(message: str):
+                """进度回调函数 - 实时显示到MCP"""
+                nonlocal last_message_time
+                current_time = time.time()
+
+                progress_messages.append(f"[{time.strftime('%H:%M:%S')}] {message}")
+
+                # 实时输出 (每5秒或重要消息)
+                if current_time - last_message_time > 5 or any(keyword in message for keyword in ['完成', '失败', '开始', '✅', '❌', '🎉']):
+                    print(f"[PROGRESS] {message}", flush=True)
+                    last_message_time = current_time
+
+            # 开始构建索引
+            if progress_callback:
+                progress_callback(f"🚀 启动高效并行分析引擎...")
+                progress_callback(f"📊 配置: 16GB内存, 4小时超时, 12个并行工作线程")
+
+            result = indexer.build_index(
+                Path(project_path),
+                force_rebuild=force_rebuild,
+                progress_callback=progress_callback
+            )
             
-            config = Config()
-            indexer = CCodeIndexer(config)
-            result = indexer.build_index(project_path, force_rebuild=force_rebuild)
-            
+            # 获取最终进度摘要
+            tracker = get_progress_tracker(Path(project_path).name)
+            final_summary = tracker.get_progress_summary()
+
+            # 格式化性能信息
+            performance = result.get('performance', {})
+            symbols_by_type = result.get('symbols_by_type', {})
+
             return [types.TextContent(
                 type="text",
-                text=f"""✅ C代码索引构建完成!
+                text=f"""✅ 高效C代码索引构建完成!
+
+{final_summary}
 
 📊 **索引统计信息**:
    📁 项目路径: {project_path}
-   🔢 总符号数: {result.get('symbols_count', 0)}
-   🎯 函数数量: {result.get('functions_count', 0)}
-   🏗️ 结构体数量: {result.get('structures_count', 0)}
-   📦 变量数量: {result.get('variables_count', 0)}
-   ⚙️ 宏定义数量: {result.get('macros_count', 0)}
-   
-📈 **性能信息**:
-   ⏱️ 索引时间: {result.get('build_time', 'N/A')}
-   💾 索引大小: {result.get('index_size', 'N/A')}
+   📂 索引输出目录: {result.get('output_directory', 'N/A')}
+   🔢 总符号数: {result.get('total_symbols', 0)}
+   🎯 函数数量: {symbols_by_type.get('function', 0)}
+   🏗️ 结构体数量: {symbols_by_type.get('structure', 0)}
+   📦 变量数量: {symbols_by_type.get('variable', 0)}
+   ⚙️ 宏定义数量: {symbols_by_type.get('macro', 0)}
+   🔍 静态分析发现: {result.get('total_findings', 0)}
 
-🎉 现在可以使用语义搜索和精确搜索功能了！"""
+📈 **性能信息**:
+   ⏱️ 总构建时间: {result.get('build_duration', 0):.2f}秒
+   💾 内存峰值: {performance.get('peak_memory_mb', 0):.1f}MB
+   ✅ 成功分析器: {performance.get('successful_analyzers', 0)}个
+   ❌ 失败分析器: {performance.get('failed_analyzers', 0)}个
+   🔧 使用的分析器: {', '.join(result.get('successful_analyzers', []))}
+
+📂 **索引结构**:
+   📋 符号数据: {result.get('index_structure', {}).get('symbols_dir', 'N/A')}
+   🔍 分析结果: {result.get('index_structure', {}).get('analysis_dir', 'N/A')}
+   📊 元数据: {result.get('index_structure', {}).get('metadata_dir', 'N/A')}
+   🧠 向量索引: {result.get('index_structure', {}).get('vectors_dir', 'N/A')}
+   🕸️ 图索引: {result.get('index_structure', {}).get('graphs_dir', 'N/A')}
+
+📋 **最近构建过程** (最后10条):
+{chr(10).join(progress_messages[-10:]) if progress_messages else '无详细日志'}
+
+🎉 **索引已就绪！** 大模型现在可以快速查询和分析代码了！
+
+💡 **使用提示**:
+   - 使用 `search_code_semantic` 进行语义搜索
+   - 使用 `search_symbol_exact` 进行精确符号查找
+   - 使用 `get_project_statistics` 查看详细统计
+   - 索引数据已统一保存在: {result.get('output_directory', 'N/A')}"""
             )]
             
         except ImportError:
@@ -551,6 +643,132 @@ async def get_callers(args: dict) -> list[types.TextContent]:
         return [types.TextContent(type="text", text="\n".join(lines))]
     except Exception as e:
         return [types.TextContent(type="text", text=f"❌ 获取调用者失败: {e}")]
+
+async def smart_query_index(args: dict) -> list[types.TextContent]:
+    """智能查询代码索引 - 大模型专用接口"""
+    index_dir = args["index_dir"]
+    query_type = args["query_type"]
+    query = args.get("query", "")
+    symbol_type = args.get("symbol_type")
+    limit = args.get("limit", 20)
+
+    if not Path(index_dir).exists():
+        return [types.TextContent(
+            type="text",
+            text=f"❌ 索引目录不存在: {index_dir}"
+        )]
+
+    try:
+        from src.query.smart_index_reader import SmartIndexReader
+        reader = SmartIndexReader(index_dir)
+
+        if query_type == "overview":
+            # 项目概览
+            overview = reader.get_project_overview()
+            text = f"""📊 **项目概览**
+
+📁 **项目路径**: {overview['project_path']}
+🔢 **总符号数**: {overview['total_symbols']}
+
+📋 **符号分布**:
+   🎯 函数: {overview['symbols_by_type'].get('function', 0)}
+   🏗️ 结构体: {overview['symbols_by_type'].get('structure', 0)}
+   📦 变量: {overview['symbols_by_type'].get('variable', 0)}
+   ⚙️ 宏: {overview['symbols_by_type'].get('macro', 0)}
+
+🔧 **分析工具**: {', '.join(overview['successful_analyzers'])}
+📂 **文件结构**: {len(overview['file_structure'])} 个文件
+
+🎯 **关键函数** (前5个):
+{chr(10).join([f"   - {f['name']} (复杂度: {f.get('complexity', 0)})" for f in overview['key_functions'][:5]])}
+
+🏗️ **主要结构体** (前5个):
+{chr(10).join([f"   - {s['name']}" for s in overview['main_structures'][:5]])}"""
+
+        elif query_type == "search":
+            # 符号搜索
+            results = reader.search_symbols(query, symbol_type, limit)
+            if results:
+                text = f"🔍 **搜索结果**: '{query}' (找到 {len(results)} 个匹配)\n\n"
+                for result in results:
+                    text += f"📍 **{result['name']}** ({result['type']})\n"
+                    text += f"   📄 {result['file_path']}:{result['line_number']}\n"
+                    text += f"   📝 {result.get('description', '无描述')}\n"
+                    text += f"   🎯 匹配度: {result['match_score']}\n\n"
+            else:
+                text = f"❌ 未找到匹配 '{query}' 的符号"
+
+        elif query_type == "function_details":
+            # 函数详情
+            details = reader.get_function_details(query)
+            if details:
+                func = details['function']
+                text = f"""🎯 **函数详情**: {func['name']}
+
+📍 **位置**: {func['file_path']}:{func['line_number']}
+🔧 **类型**: {func.get('return_type', 'unknown')}
+📝 **参数**: {', '.join(func.get('parameters', []))}
+🧮 **复杂度**: {details['complexity']}
+
+📞 **调用关系**:
+   📤 调用者 ({len(details['callers'])}): {', '.join([c.get('caller', '') for c in details['callers'][:5]])}
+   📥 被调用 ({len(details['callees'])}): {', '.join([c.get('callee', '') for c in details['callees'][:5]])}"""
+            else:
+                text = f"❌ 未找到函数: {query}"
+
+        elif query_type == "file_symbols":
+            # 文件符号
+            symbols = reader.get_file_symbols(query)
+            text = f"📄 **文件符号**: {query} (共 {len(symbols)} 个)\n\n"
+            for symbol in symbols[:limit]:
+                text += f"📍 {symbol['name']} ({symbol['type']}) - 行 {symbol['line_number']}\n"
+
+        elif query_type == "by_type":
+            # 按类型查询
+            symbols = reader.get_symbols_by_type(query)
+            text = f"🏷️ **{query} 类型符号** (共 {len(symbols)} 个)\n\n"
+            for symbol in symbols[:limit]:
+                text += f"📍 {symbol['name']} - {symbol['file_path']}:{symbol['line_number']}\n"
+
+        elif query_type == "stats":
+            # 快速统计
+            stats = reader.get_quick_stats()
+            text = f"""📊 **项目统计**
+
+📄 总文件数: {stats['total_files']}
+🔢 总符号数: {stats['total_symbols']}
+🎯 函数数: {stats['functions_count']}
+🏗️ 结构体数: {stats['structures_count']}
+📦 变量数: {stats['variables_count']}
+⚙️ 宏数: {stats['macros_count']}
+
+⏱️ 分析耗时: {stats['analysis_duration']:.2f}秒
+✅ 成功分析器: {stats['successful_analyzers']}个
+❌ 失败分析器: {stats['failed_analyzers']}个"""
+
+        elif query_type == "location":
+            # 代码定位
+            locations = reader.find_code_location(query, symbol_type)
+            if locations:
+                text = f"📍 **代码位置**: '{query}' (找到 {len(locations)} 个)\n\n"
+                for loc in locations:
+                    text += f"📄 **{loc['file_path']}:{loc['line_number']}**\n"
+                    text += f"   🏷️ 类型: {loc['type']}\n"
+                    text += f"   📝 描述: {loc['description']}\n"
+                    text += f"   🔧 来源: {loc['source_analyzer']}\n\n"
+            else:
+                text = f"❌ 未找到 '{query}' 的代码位置"
+
+        else:
+            text = f"❌ 不支持的查询类型: {query_type}"
+
+        return [types.TextContent(type="text", text=text)]
+
+    except Exception as e:
+        return [types.TextContent(
+            type="text",
+            text=f"❌ 智能查询失败: {str(e)}"
+        )]
 
 async def main():
     """主函数 - 启动MCP服务器"""

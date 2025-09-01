@@ -30,15 +30,17 @@ class ProjectProfile:
     performance_focus: bool = False         # 是否重点关注性能
 
 
-@dataclass 
+@dataclass
 class PerformanceConfig:
-    """性能配置（基于官方推荐）"""
-    max_memory_mb: int = 8000               # 最大内存使用
-    timeout_seconds: int = 300              # 分析超时时间
+    """性能配置（针对16GB内存和4小时分析时间优化）"""
+    max_memory_mb: int = 14000              # 最大内存使用 (16GB的87.5%)
+    timeout_seconds: int = 14400            # 分析超时时间 (4小时)
     parallel_jobs: str = "auto"             # 并行作业数
-    max_file_size_mb: int = 10              # 单文件最大大小
+    max_file_size_mb: int = 100             # 单文件最大大小 (放宽限制)
     enable_caching: bool = True             # 启用缓存
     incremental_analysis: bool = True       # 增量分析
+    batch_size: int = 20                    # 批处理大小 (针对大型项目优化)
+    progress_report_interval: int = 50      # 进度报告间隔
 
 
 @dataclass
@@ -124,15 +126,17 @@ class UnifiedConfig:
     def _auto_tune_performance(self):
         """基于项目特征自动调优性能配置"""
         if self.profile.complexity_level == "high":
-            # 大型项目优化
-            self.performance.max_memory_mb = 12000
-            self.performance.timeout_seconds = 600
-            self.performance.max_file_size_mb = 50
+            # 大型项目优化 (针对10万行+项目)
+            self.performance.max_memory_mb = 14000
+            self.performance.timeout_seconds = 14400  # 4小时
+            self.performance.max_file_size_mb = 100
+            self.performance.batch_size = 15  # 更小的批大小
         elif self.profile.complexity_level == "simple":
             # 小型项目优化
-            self.performance.max_memory_mb = 4000
-            self.performance.timeout_seconds = 120
-            self.performance.max_file_size_mb = 5
+            self.performance.max_memory_mb = 6000
+            self.performance.timeout_seconds = 3600  # 1小时
+            self.performance.max_file_size_mb = 50
+            self.performance.batch_size = 50
     
     def _auto_tune_quality(self):
         """基于项目特征自动调优质量配置"""
@@ -269,8 +273,9 @@ class UnifiedConfig:
             "enable_codeql": True,  # 自动安装并启用
             
             "target_languages": self.profile.primary_languages,
-            "max_workers": min(4, max(2, os.cpu_count() // 2)) if os.cpu_count() else 2,
+            "max_workers": min(16, max(4, os.cpu_count())) if os.cpu_count() else 4,  # 增加并发数
             "timeout_seconds": self.performance.timeout_seconds,
+            "batch_size": getattr(self.performance, 'batch_size', 20),
             "min_confidence": self.quality.min_confidence_level,
             "include_info_findings": (self.quality.min_confidence_level == "low"),
         }

@@ -39,56 +39,71 @@ class CTagsExtractor:
             if Path(tmpf_path).exists():
                 Path(tmpf_path).unlink()
                 
-            # 基于兼容性的CTags命令构建
-            cmd = [
-                "ctags",
-                # 核心语言设置
-                "--languages=C,C++",
-                
-                # 字段配置（兼容性更好的字段集）
-                "--fields=+n+k+S+l+f+t+z",  
-                # n: 行号, k: 类型, S: 签名, l: 语言, f: 文件范围, t: 类型和原型, z: 作用域
-                
-                # 扩展功能
-                "--extras=+q+f+r",
-                # q: 限定名称, f: 文件名标签, r: 引用标签
-                
-                # 使用传统的标准格式而不是JSON
-                "--output-encoding=utf-8",
-                
-                # 强制覆盖已存在的文件
-                "--append=no",
-                
-                # 符号类型配置
-                "--c-kinds=+p+x",     # 函数原型 + 外部变量
-                "--c++-kinds=+p+x",   # C++函数原型 + 外部变量
-                
-                # 递归扫描
-                "-R",
-                
-                # 排除不必要的文件
-                "--exclude=*.min.js",
-                "--exclude=*.bundle.js", 
-                "--exclude=node_modules",
-                "--exclude=.git",
-                "--exclude=*.o",
-                "--exclude=*.so",
-                "--exclude=*.dll",
-                
-                # 输出文件
-                "-f", tmpf_path,
-                
-                # 目标路径
-                str(project_path),
-            ]
+            # 检测CTags版本并使用兼容的参数
+            try:
+                version_result = run_command_safe(["ctags", "--version"], timeout=10)
+                is_universal_ctags = "Universal Ctags" in version_result.stdout
+                logger.info(f"检测到CTags版本: {'Universal' if is_universal_ctags else 'Exuberant'}")
+            except:
+                is_universal_ctags = False
+                logger.warning("无法检测CTags版本，使用兼容模式")
+
+            if is_universal_ctags:
+                # Universal CTags (新版本) - 支持更多参数
+                cmd = [
+                    "ctags",
+                    "--languages=C,C++",
+                    "--fields=+n+k+S+l+f+t+z",  # 完整字段集
+                    "--extras=+q+f+r",          # 完整扩展集
+                    "--output-encoding=utf-8",
+                    "--append=no",
+                    "--c-kinds=+p+x",
+                    "--c++-kinds=+p+x",
+                    "-R",
+                    "-f", tmpf_path,
+                    str(project_path),
+                ]
+            else:
+                # Exuberant CTags (旧版本) - 使用兼容参数
+                cmd = [
+                    "ctags",
+                    "--languages=C,C++",
+                    "--fields=+n+k+S+l+f",      # 移除不支持的't'和'z'
+                    "--extra=+q+f",             # 使用--extra而不是--extras，移除不支持的'r'
+                    "--append=no",
+                    "--c-kinds=+p+x",
+                    "--c++-kinds=+p+x",
+                    "-R",
+                    "-f", tmpf_path,
+                    str(project_path),
+                ]
             try:
                 from ..utils.windows_compat import run_command_safe
+                logger.info(f"执行CTags命令: {' '.join(cmd)}")
                 result = run_command_safe(cmd, timeout=300)
+
                 if result.returncode != 0:
-                    logger.error(f"ctags 运行失败: {result.stderr}")
-                    return []
+                    logger.error(f"ctags 运行失败:")
+                    logger.error(f"  返回码: {result.returncode}")
+                    logger.error(f"  标准输出: {result.stdout}")
+                    logger.error(f"  错误输出: {result.stderr}")
+
+                    # 尝试简化的CTags命令
+                    simple_cmd = ["ctags", "-R", "--fields=+iaS", "--extra=+q", str(project_path)]
+                    logger.info(f"尝试简化命令: {' '.join(simple_cmd)}")
+                    simple_result = run_command_safe(simple_cmd, timeout=300)
+
+                    if simple_result.returncode != 0:
+                        logger.error(f"简化命令也失败: {simple_result.stderr}")
+                        return []
+                    else:
+                        logger.info("简化命令成功，使用默认tags文件")
+                        tmpf_path = str(project_path / "tags")
+
             except Exception as e:
                 logger.error(f"ctags 执行失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 return []
 
             # 验证文件是否创建成功

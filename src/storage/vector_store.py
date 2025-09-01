@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import chromadb
 from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
+from ..core.offline_embedding_manager import get_hybrid_embedding_manager
 from loguru import logger
 import json
 
@@ -19,25 +19,40 @@ class VectorStore:
     
     def __init__(self, config=None):
         """
-        初始化向量存储
-        
+        初始化智能向量存储
+
         Args:
             config: 配置对象
         """
         self.config = config
-        self.model_name = getattr(config, 'embedding_model', 'all-MiniLM-L6-v2')
-        self.collection_name = getattr(config, 'collection_name', 'c_code_symbols')
-        
-        # 初始化嵌入模型
-        logger.info(f"正在加载嵌入模型: {self.model_name}")
+        self.collection_name = getattr(config, 'collection_name', 'smart_c_code_symbols')
+
+        # 使用混合嵌入管理器 (在线优先，离线备用)
+        logger.info("初始化混合嵌入管理器...")
         try:
-            self.embedding_model = SentenceTransformer(self.model_name)
-            self.embedding_dimension = self.embedding_model.get_sentence_embedding_dimension()
-            logger.info(f"嵌入模型加载完成，维度: {self.embedding_dimension}")
+            self.embedding_manager = get_hybrid_embedding_manager()
+            self.embedding_model = self.embedding_manager.get_model()
+
+            # 获取维度
+            if hasattr(self.embedding_model, 'get_sentence_embedding_dimension'):
+                self.embedding_dimension = self.embedding_model.get_sentence_embedding_dimension()
+            else:
+                self.embedding_dimension = getattr(self.embedding_model, 'dimension', 384)
+
+            model_info = self.embedding_manager.get_model_info()
+            logger.info(f"混合嵌入模型加载完成:")
+            logger.info(f"  - 模型: {model_info.get('model_name', 'unknown')}")
+            logger.info(f"  - 维度: {self.embedding_dimension}")
+
+            if 'model_info' in model_info:
+                logger.info(f"  - 质量: {model_info['model_info'].get('quality', 'unknown')}")
+                logger.info(f"  - 代码优化: {model_info['model_info'].get('code_optimized', False)}")
+                logger.info(f"  - 离线模式: {model_info['model_info'].get('offline', False)}")
+
         except Exception as e:
-            logger.error(f"嵌入模型加载失败: {e}")
+            logger.error(f"混合嵌入模型加载失败: {e}")
             raise
-        
+
         # 初始化ChromaDB
         self._init_chromadb()
     
@@ -88,17 +103,19 @@ class VectorStore:
             return
         
         logger.info(f"开始添加 {len(documents)} 个文档到向量存储")
-        
+
         try:
-            # 生成嵌入向量
-            embeddings = self.embedding_model.encode(
-                documents, 
-                convert_to_tensor=False,
-                show_progress_bar=True
-            ).tolist()
-            
-            # 批量添加到ChromaDB
-            batch_size = 100
+            # 使用智能嵌入管理器生成向量
+            logger.info(f"使用智能嵌入管理器生成向量: {len(documents)} 个文档")
+
+            embeddings = self.embedding_manager.encode_for_code(
+                documents,
+                batch_size=32,  # 优化的批大小
+                show_progress=True
+            )
+
+            # 批量添加到ChromaDB - 针对大型项目减小批大小
+            batch_size = 50  # 减小批大小以减少内存压力
             for i in range(0, len(documents), batch_size):
                 end_idx = min(i + batch_size, len(documents))
                 
@@ -188,8 +205,8 @@ class VectorStore:
             搜索结果列表
         """
         try:
-            # 生成查询向量
-            query_embedding = self.embedding_model.encode([query], convert_to_tensor=False).tolist()
+            # 使用智能嵌入管理器生成查询向量
+            query_embedding = self.embedding_manager.encode_for_code([query], batch_size=1, show_progress=False)
             
             # 构建过滤条件
             where_filter = None

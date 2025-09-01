@@ -34,7 +34,13 @@ class Config:
             # 索引配置
             'index_metadata_dir': './data/metadata',
             'supported_extensions': ['.c', '.h', '.cpp', '.hpp', '.cc', '.cxx'],
-            'max_file_size_mb': 10,
+            'max_file_size_mb': 100,  # 针对大型项目放宽文件大小限制
+
+            # 性能配置 - 针对16GB内存和2小时分析时间优化
+            'max_workers': 12,
+            'timeout_seconds': 7200,  # 2小时
+            'batch_size': 20,
+            'memory_threshold_gb': 8,  # 8GB内存阈值
             
             # API配置
             'api_host': '127.0.0.1',
@@ -50,9 +56,9 @@ class Config:
             'max_search_limit': 100,
             'similarity_threshold': 0.5,
             
-            # CLDK配置
-            'cldk_timeout': 300,  # 5分钟超时
-            'cldk_max_memory': '4GB',
+            # CLDK配置 - 针对大型项目优化
+            'cldk_timeout': 7200,  # 2小时超时
+            'cldk_max_memory': '12GB',  # 增加内存限制
         }
         
         # 从环境变量覆盖配置

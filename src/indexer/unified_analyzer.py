@@ -42,9 +42,9 @@ class AnalysisConfig:
     # 语言过滤
     target_languages: Optional[List[str]] = None
     
-    # 并行配置
-    max_workers: int = 4
-    timeout_seconds: int = 600
+    # 并行配置 - 针对16GB内存优化
+    max_workers: int = 12
+    timeout_seconds: int = 7200  # 2小时
     
 
     

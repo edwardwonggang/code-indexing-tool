@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Set
+from typing import Dict, List, Any, Optional, Set, Callable
 
 from loguru import logger
 
@@ -17,6 +17,7 @@ from ..storage.vector_store import VectorStore
 from ..storage.graph_store import GraphStore
 from ..storage.index_manager import IndexManager
 from ..utils.config import Config
+from ..utils.progress_tracker import ProgressTracker, get_progress_tracker, setup_standard_stages
 from .ts_symbol_extractor import TSSymbolExtractor  # 无编译主力
 from .ctags_extractor import CTagsExtractor       # 备用
 from .call_graph_extractor import CallGraphExtractor
@@ -65,66 +66,122 @@ class CCodeIndexer:
         
         logger.info("C代码索引构建器（Tree-sitter + Lizard）初始化完成")
 
-    def build_index(self, project_path: Path, force_rebuild: bool = False) -> Dict[str, Any]:
+    def build_index(self, project_path: Path, force_rebuild: bool = False, progress_callback: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
         """
         构建C代码索引
-        
+
         Args:
             project_path: C项目根目录
             force_rebuild: 是否强制重建索引
-            
+            progress_callback: 进度回调函数
+
         Returns:
             索引构建结果
         """
         start_time = time.time()
+        project_id = str(project_path.name)
+
+        # 初始化进度跟踪器
+        tracker = get_progress_tracker(project_id)
+        setup_standard_stages(tracker)
+
+        # 添加进度回调
+        if progress_callback:
+            tracker.add_callback(lambda data: progress_callback(tracker.get_progress_summary()))
+
         logger.info(f"开始构建C代码索引: {project_path}")
-        
+
         try:
+            # 阶段1: 初始化
+            tracker.start_stage("init")
+            if progress_callback:
+                progress_callback(f"🚀 开始分析项目: {project_path}")
+
             # 检查现有索引
-            project_id = str(project_path.name)
-            
             if not force_rebuild and self.index_manager.is_index_valid(project_id):
                 logger.info("发现有效索引，使用缓存")
                 cached_result = self.index_manager.get_index_metadata(project_id)
                 if cached_result:
+                    tracker.complete_stage("init")
+                    if progress_callback:
+                        progress_callback("✅ 使用现有索引缓存")
                     return cached_result
+
+            tracker.complete_stage("init")
             
-            # 1. 提取符号
-            symbols = self._extract_symbols(project_path)
-            
-            # 2. 提取调用图
-            call_graph = self._extract_call_graph(project_path, symbols)
-            
-            # 3. 构建向量索引
-            self._build_vector_index(symbols)
-            
-            # 4. 构建图索引
-            graph_data = self._build_graph_index(symbols, call_graph)
-            
-            # 统计文件
+            # 阶段2: 文件扫描
+            tracker.start_stage("scan")
             source_files = list(project_path.rglob("*.c")) + list(project_path.rglob("*.h"))
+            tracker.update_progress("scan", len(source_files), f"发现 {len(source_files)} 个源文件")
+            tracker.complete_stage("scan")
+
+            # 阶段3-4: 提取符号 (包含解析)
+            tracker.start_stage("parse", len(source_files))
+            if progress_callback:
+                progress_callback(f"🔍 开始解析 {len(source_files)} 个文件...")
+            symbols = self._extract_symbols(project_path, tracker, progress_callback)
+            tracker.complete_stage("parse")
+            tracker.complete_stage("extract")
+
+            # 阶段5: 调用图分析
+            tracker.start_stage("callgraph")
+            if progress_callback:
+                progress_callback(f"🔗 分析函数调用关系...")
+            call_graph = self._extract_call_graph(project_path, symbols, tracker, progress_callback)
+            tracker.complete_stage("callgraph")
+
+            # 阶段6: 向量化
+            tracker.start_stage("vectorize", len(symbols))
+            if progress_callback:
+                progress_callback(f"🧠 生成 {len(symbols)} 个符号的语义向量...")
+            self._build_vector_index(symbols, tracker, progress_callback)
+            tracker.complete_stage("vectorize")
+
+            # 阶段7: 存储
+            tracker.start_stage("store")
+            if progress_callback:
+                progress_callback(f"💾 保存索引数据...")
+            graph_data = self._build_graph_index(symbols, call_graph, tracker)
+            tracker.complete_stage("store")
             
+            # 阶段8: 完成
+            tracker.start_stage("finalize")
+
             # 构建结果
+            build_time = time.time() - start_time
             result = {
                 "status": "success",
                 "project_id": project_id,
                 "project_path": str(project_path),
                 "total_files": len(source_files),
                 "total_symbols": len(symbols),
+                "symbols_count": len(symbols),
+                "functions_count": len([s for s in symbols if s.get('type') == 'function']),
+                "structures_count": len([s for s in symbols if s.get('type') == 'structure']),
+                "variables_count": len([s for s in symbols if s.get('type') == 'variable']),
+                "macros_count": len([s for s in symbols if s.get('type') == 'macro']),
+                "build_time": f"{build_time:.2f}秒",
+                "index_size": f"{tracker.peak_memory_mb:.1f}MB",
                 "metadata": {
                     "analyzers_used": self._get_used_analyzers(),
-                    "build_time": time.time() - start_time,
+                    "build_time": build_time,
                     "timestamp": time.time(),
+                    "peak_memory_mb": tracker.peak_memory_mb,
                     "cscope_analysis": getattr(self, '_cscope_analysis_result', {})
                 },
                 "call_graph": call_graph,
                 "graph_data": graph_data
             }
+
+            tracker.complete_stage("finalize")
             
             # 保存索引元数据
             self.index_manager.save_index_metadata(project_id, result)
-            
-            logger.info(f"索引构建完成，耗时 {time.time() - start_time:.2f} 秒")
+
+            if progress_callback:
+                progress_callback(f"✅ 索引构建完成！耗时 {build_time:.2f}秒，共处理 {len(symbols)} 个符号")
+
+            logger.info(f"索引构建完成，耗时 {build_time:.2f} 秒")
             return result
             
         except Exception as e:
@@ -169,27 +226,39 @@ class CCodeIndexer:
             
         return analyzers
 
-    def _extract_symbols(self, project_path: Path) -> List[Dict[str, Any]]:
+    def _extract_symbols(self, project_path: Path, tracker: ProgressTracker, progress_callback: Optional[Callable[[str], None]] = None) -> List[Dict[str, Any]]:
         """从项目中提取符号（多种方法）"""
         all_symbols = []
         symbol_names_seen = set()
-        
+
         # 1. Tree-sitter高级查询（优先）
         try:
             if self.ts_query_extractor:
+                if progress_callback:
+                    progress_callback("🔍 使用Tree-sitter高级查询提取符号...")
                 ts_query_symbols = self.ts_query_extractor.extract_project(project_path)
                 all_symbols.extend(ts_query_symbols)
                 for sym in ts_query_symbols:
                     symbol_names_seen.add(f"{sym.get('name', '')}:{sym.get('file_path', '')}")
                 logger.info(f"Tree-sitter Queries 提取了 {len(ts_query_symbols)} 个符号")
+                tracker.update_progress("extract", len(ts_query_symbols), f"高级查询提取 {len(ts_query_symbols)} 个符号")
             else:
                 logger.info("Tree-sitter Query 不可用，跳过高级查询")
         except Exception as e:
             logger.warning(f"Tree-sitter查询失败: {e}")
-        
+
         # 2. Tree-sitter + Lizard 基础解析（回退）
         try:
-            ts_symbols = self.ts_symbol_extractor.extract_project(project_path)
+            if progress_callback:
+                progress_callback("🌳 使用Tree-sitter基础解析...")
+
+            # 创建进度回调
+            def ts_progress(current: int, total: int, message: str = ""):
+                tracker.update_progress("parse", current, message)
+                if progress_callback:
+                    progress_callback(f"📝 Tree-sitter解析: {current}/{total} ({current/total*100:.1f}%) - {message}")
+
+            ts_symbols = self.ts_symbol_extractor.extract_project(project_path, progress_callback=ts_progress)
             # 去重合并
             before_count = len(all_symbols)
             for sym in ts_symbols:
@@ -271,29 +340,39 @@ class CCodeIndexer:
         logger.info(f"总共提取了 {len(all_symbols)} 个符号")
         return all_symbols
 
-    def _extract_call_graph(self, project_path: Path, symbols: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _extract_call_graph(self, project_path: Path, symbols: List[Dict[str, Any]], tracker: ProgressTracker, progress_callback: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
         """提取调用图"""
         try:
+            if progress_callback:
+                progress_callback("🔗 分析函数调用关系...")
+
             call_graph = self.call_graph_extractor.extract_call_graph(project_path, symbols)
-            logger.info(f"提取了 {len(call_graph.get('edges', []))} 条调用关系")
+            edges_count = len(call_graph.get('edges', []))
+
+            tracker.update_progress("callgraph", edges_count, f"提取 {edges_count} 条调用关系")
+            logger.info(f"提取了 {edges_count} 条调用关系")
             return call_graph
         except Exception as e:
             logger.warning(f"调用图提取失败: {e}")
+            tracker.complete_stage("callgraph", success=False)
             return {"nodes": [], "edges": []}
 
-    def _build_vector_index(self, symbols: List[Dict[str, Any]]) -> None:
+    def _build_vector_index(self, symbols: List[Dict[str, Any]], tracker: ProgressTracker, progress_callback: Optional[Callable[[str], None]] = None) -> None:
         """构建向量索引"""
         try:
+            if progress_callback:
+                progress_callback(f"🧠 准备向量化 {len(symbols)} 个符号...")
+
             # 准备文档
             documents = []
             metadatas = []
             ids = []
-            
-            for symbol in symbols:
+
+            for i, symbol in enumerate(symbols):
                 # 创建文档内容
                 doc_content = self._create_document_content(symbol)
                 documents.append(doc_content)
-                
+
                 # 创建元数据
                 metadata = {
                     "id": symbol.get("id", ""),
@@ -304,35 +383,53 @@ class CCodeIndexer:
                 }
                 metadatas.append(metadata)
                 ids.append(symbol.get("id", f"sym_{len(ids)}"))
-            
+
+                # 更新进度
+                if i % 100 == 0:
+                    tracker.update_progress("vectorize", i, f"准备向量化数据 {i}/{len(symbols)}")
+
+            if progress_callback:
+                progress_callback(f"💾 保存 {len(documents)} 个向量到数据库...")
+
             # 添加到向量存储
             self.vector_store.add_documents(documents, metadatas, ids)
+            tracker.update_progress("vectorize", len(symbols), f"向量索引完成")
             logger.info(f"构建向量索引完成，共 {len(documents)} 个文档")
-            
+
         except Exception as e:
             logger.error(f"向量索引构建失败: {e}")
+            tracker.complete_stage("vectorize", success=False)
             raise
 
-    def _build_graph_index(self, symbols: List[Dict[str, Any]], call_graph: Dict[str, Any]) -> None:
+    def _build_graph_index(self, symbols: List[Dict[str, Any]], call_graph: Dict[str, Any], tracker: ProgressTracker) -> None:
         """构建图索引"""
         try:
             # 添加符号节点
-            for symbol in symbols:
+            for i, symbol in enumerate(symbols):
                 symbol_id = symbol.get('id', f"{symbol.get('name', 'unknown')}_{symbol.get('file_path', '')}")
                 self.graph_store.add_symbol(symbol_id, symbol)
-            
+
+                if i % 200 == 0:
+                    tracker.update_progress("store", i, f"存储符号节点 {i}/{len(symbols)}")
+
             # 添加调用关系边
-            for edge in call_graph.get("edges", []):
+            edges = call_graph.get("edges", [])
+            for i, edge in enumerate(edges):
                 self.graph_store.add_call_relation(
                     edge.get("caller", ""),
                     edge.get("callee", ""),
                     edge.get("metadata", {})
                 )
-            
+
+                if i % 100 == 0:
+                    tracker.update_progress("store", len(symbols) + i, f"存储调用关系 {i}/{len(edges)}")
+
+            tracker.update_progress("store", len(symbols) + len(edges), "图索引构建完成")
             logger.info("图索引构建完成")
-            
+
         except Exception as e:
             logger.error(f"图索引构建失败: {e}")
+            tracker.complete_stage("store", success=False)
             raise
 
     def _create_document_content(self, symbol: Dict[str, Any]) -> str:

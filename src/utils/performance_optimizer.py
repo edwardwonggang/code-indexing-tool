@@ -78,12 +78,13 @@ class PerformanceOptimizer:
             use_processes: 是否使用进程池（CPU密集型任务）
         """
         self.cpu_count = mp.cpu_count()
-        self.max_workers = max_workers or min(self.cpu_count, 8)
+        # 针对16GB内存优化：增加并发数
+        self.max_workers = max_workers or min(self.cpu_count * 2, 16)
         self.use_processes = use_processes
-        
-        # 内存监控
+
+        # 内存监控 - 针对16GB内存优化
         self.process = psutil.Process()
-        self.memory_threshold = 1024 * 1024 * 1024  # 1GB
+        self.memory_threshold = 8 * 1024 * 1024 * 1024  # 8GB阈值 (16GB的50%)
         
         # 缓存管理
         self._cache = {}
@@ -95,10 +96,10 @@ class PerformanceOptimizer:
                    f"CPU cores: {self.cpu_count}")
 
     def process_files_parallel(
-        self, 
-        files: List[Path], 
+        self,
+        files: List[Path],
         processor_func: Callable[[Path], Any],
-        batch_size: int = 50,
+        batch_size: int = 30,  # 针对大型项目减小批大小
         progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> List[Any]:
         """

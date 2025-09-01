@@ -369,15 +369,27 @@ class CscopeAnalyzer:
             # 创建临时目录存放cscope数据库
             db_dir = project_path / ".cscope_tmp"
             db_dir.mkdir(exist_ok=True)
-            
+
+            # 确保目录权限正确
+            import stat
+            db_dir.chmod(stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+
             # 创建文件列表
             file_list_path = (db_dir / "cscope.files").resolve()
             with open(file_list_path, 'w', encoding='utf-8') as f:
                 for file_path in source_files:
-                    # 在Windows上，为路径加上引号以处理空格
-                    f.write(f'"{file_path.resolve()}"\n')
-            
+                    # 使用相对路径避免Windows路径问题
+                    try:
+                        rel_path = file_path.relative_to(project_path)
+                        f.write(f"{rel_path}\n")
+                    except ValueError:
+                        # 如果无法创建相对路径，使用绝对路径
+                        f.write(f"{file_path.resolve()}\n")
+
             db_path = (db_dir / "cscope.out").resolve()
+
+            # 确保文件列表可读
+            file_list_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
             
             # 获取 cscope 命令路径
             cscope_cmd = getattr(self, 'cscope_path', 'cscope')
@@ -390,12 +402,32 @@ class CscopeAnalyzer:
                 "-i", str(file_list_path)  # 输入文件列表
             ]
 
-            # 直接在项目目录下运行命令，而不是使用批处理脚本
+            # 确保输出目录存在且可写
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # 在数据库目录下运行命令，避免路径问题
             from ..utils.windows_compat import run_command_safe
-            result = run_command_safe(cmd, cwd=project_path, timeout=300)
+            result = run_command_safe(cmd, cwd=db_path.parent, timeout=300)
 
             if result.returncode != 0:
-                raise RuntimeError(f"Cscope数据库构建失败: {result.stderr or result.stdout}")
+                # 尝试更简单的命令
+                logger.info(f"标准Cscope命令失败，尝试简化命令")
+                logger.debug(f"失败原因: {result.stderr or result.stdout}")
+
+                simple_cmd = [cscope_cmd, "-b", "-R"]
+                simple_result = run_command_safe(simple_cmd, cwd=project_path, timeout=300)
+
+                if simple_result.returncode != 0:
+                    raise RuntimeError(f"Cscope数据库构建失败: {result.stderr or result.stdout}")
+                else:
+                    # 移动生成的文件到目标位置
+                    default_db = project_path / "cscope.out"
+                    if default_db.exists():
+                        import shutil
+                        shutil.move(str(default_db), str(db_path))
+                        logger.info("✅ 使用简化命令成功构建Cscope数据库")
+                    else:
+                        raise RuntimeError("Cscope数据库文件未生成")
             
             logger.info(f"Cscope数据库构建完成: {db_path}")
             return db_path

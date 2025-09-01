@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Callable
 from pathlib import Path
 import hashlib
 
@@ -30,12 +30,21 @@ class TSSymbolExtractor:
             self.parser = get_parser("c")
             self.language = None
             logger.info("Tree-sitter C 解析器初始化完成（get_parser）")
-        except Exception:
-            # 回退：直接使用底层API（可能与已安装的二进制不兼容）
-            self.language = get_language("c")
-            self.parser = Parser()
-            self.parser.set_language(self.language)
-            logger.info("Tree-sitter C 解析器初始化完成（set_language）")
+        except Exception as e:
+            logger.warning(f"get_parser失败: {e}")
+            try:
+                # 回退：直接使用底层API（可能与已安装的二进制不兼容）
+                from tree_sitter_languages import get_language
+                from tree_sitter import Parser
+                self.language = get_language("c")
+                self.parser = Parser()
+                self.parser.set_language(self.language)
+                logger.info("Tree-sitter C 解析器初始化完成（set_language）")
+            except Exception as e2:
+                logger.error(f"所有Tree-sitter方法都失败: {e2}")
+                # 创建一个简化的回退解析器
+                self._create_fallback_parser()
+                logger.info("使用简化的回退解析器")
         
         # 解析状态管理
         self._name_to_ids: Dict[str, List[str]] = {}  # 符号名到ID映射
@@ -63,12 +72,69 @@ class TSSymbolExtractor:
         # 支持的文件扩展名（官方C语言语法支持）
         self.supported_extensions = {".c", ".h", ".cpp", ".cxx", ".cc", ".hpp", ".hxx"}
 
+    def _create_fallback_parser(self):
+        """创建简化的回退解析器"""
+        logger.warning("创建简化的回退解析器，功能有限")
+        self.parser = None
+        self.language = None
+        self.fallback_mode = True
+
+    def _extract_fallback(self, project_path: Path) -> List[Dict[str, Any]]:
+        """回退模式：使用简单的正则表达式提取符号"""
+        import re
+
+        symbols = []
+        c_files = []
+        for ext in [".c", ".h"]:
+            c_files.extend(project_path.rglob(f"*{ext}"))
+
+        # 简单的正则表达式模式
+        function_pattern = re.compile(r'\b(\w+)\s+(\w+)\s*\([^)]*\)\s*\{', re.MULTILINE)
+        struct_pattern = re.compile(r'\bstruct\s+(\w+)', re.MULTILINE)
+
+        for file_path in c_files[:10]:  # 限制文件数量
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+
+                # 提取函数
+                for match in function_pattern.finditer(content):
+                    symbols.append({
+                        "name": match.group(2),
+                        "type": "function",
+                        "file_path": str(file_path),
+                        "line_number": content[:match.start()].count('\n') + 1,
+                        "return_type": match.group(1)
+                    })
+
+                # 提取结构体
+                for match in struct_pattern.finditer(content):
+                    symbols.append({
+                        "name": match.group(1),
+                        "type": "struct",
+                        "file_path": str(file_path),
+                        "line_number": content[:match.start()].count('\n') + 1
+                    })
+
+            except Exception as e:
+                logger.debug(f"回退模式处理文件失败 {file_path}: {e}")
+                continue
+
+        logger.info(f"回退模式提取了 {len(symbols)} 个符号")
+        return {"symbols": symbols}
+
     def extract_from_analysis(self, _analysis, project_path: Path) -> List[Dict[str, Any]]:
         """与旧接口保持兼容：忽略 analysis，直接从源码提取。"""
         return self.extract_project(project_path)
 
-    def extract_project(self, project_path: Path) -> List[Dict[str, Any]]:
+    def extract_project(self, project_path: Path, progress_callback: Optional[Callable[[int, int, str], None]] = None) -> List[Dict[str, Any]]:
         """提取项目符号（基于官方推荐的文件过滤和处理流程）"""
+
+        # 检查是否为回退模式
+        if hasattr(self, 'fallback_mode') and self.fallback_mode:
+            logger.warning("Tree-sitter处于回退模式，返回简化结果")
+            return self._extract_fallback(project_path)
+
         # 重置状态
         self._name_to_ids.clear()
         self._call_edges_name.clear()
@@ -153,8 +219,25 @@ class TSSymbolExtractor:
                 logger.warning(f"解析文件 {file_path} 失败: {e}")
                 return []
         
-        # 并行解析所有过滤后的文件
-        file_results = parallel_map(parse_single_file, filtered_files)
+        # 并行解析所有过滤后的文件，带进度跟踪
+        if progress_callback:
+            progress_callback(0, len(filtered_files), "开始并行解析文件")
+
+        # 使用性能优化器的进度跟踪功能
+        from ..utils.performance_optimizer import get_performance_optimizer
+        optimizer = get_performance_optimizer()
+
+        def progress_wrapper(processed: int, total: int):
+            if progress_callback:
+                progress_callback(processed, total, f"已解析 {processed} 个文件")
+
+        file_results = optimizer.process_files_parallel(
+            filtered_files,
+            parse_single_file,
+            batch_size=20,  # 针对大型项目减小批大小
+            progress_callback=progress_wrapper
+        )
+
         for file_symbols in file_results:
             symbols.extend(file_symbols)
 
@@ -167,7 +250,19 @@ class TSSymbolExtractor:
         self._call_edges = resolved_edges
 
         logger.info(f"Tree-sitter 符号提取完成，共 {len(symbols)} 个，调用边 {len(self._call_edges)} 条，include {len(self._include_edges)} 条")
-        return symbols
+
+        # 返回标准化的字典格式，与其他工具保持一致
+        return {
+            "symbols": symbols,
+            "call_edges": self._call_edges,
+            "include_edges": self._include_edges,
+            "metadata": {
+                "tool": "treesitter",
+                "total_symbols": len(symbols),
+                "total_call_edges": len(self._call_edges),
+                "total_include_edges": len(self._include_edges)
+            }
+        }
 
     def _extract_from_tree(
         self,

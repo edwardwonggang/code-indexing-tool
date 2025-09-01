@@ -63,9 +63,9 @@ class CppcheckAnalyzer:
             # 构建Cppcheck命令
             cmd = self._build_cppcheck_command(project_path)
             
-            # 执行Cppcheck分析
+            # 执行Cppcheck分析 - 针对大型项目增加超时时间
             from ..utils.windows_compat import run_command_safe
-            result = run_command_safe(cmd, timeout=300)
+            result = run_command_safe(cmd, timeout=3600)  # 1小时超时
             
             if result.returncode != 0:
                 logger.warning(f"Cppcheck执行完成但有警告: {result.stderr}")
@@ -266,10 +266,12 @@ class CppcheckAnalyzer:
         ])
         
         # 性能和资源配置（官方推荐）
+        import os
+        cpu_count = os.cpu_count() or 4  # 获取CPU核心数，默认4
         cmd.extend([
             "--max-configs=12",         # 限制配置数量（官方默认）
             "--platform=native",        # 使用本地平台配置
-            "-j", "auto",              # 自动并行处理
+            "-j", str(min(cpu_count, 8)),  # 并行处理，最多8个线程
         ])
         
         # C/C++标准配置（官方支持的标准）
@@ -278,21 +280,44 @@ class CppcheckAnalyzer:
             "--std=c++17",             # C++17标准
         ])
         
-        # 库配置（官方内置库）
-        standard_libraries = ["std", "posix"]
-        if single_file:
-            # 单文件分析时使用基础库
-            for lib in standard_libraries:
-                cmd.extend(["--library", lib])
-        else:
-            # 项目分析时使用完整库配置
-            extended_libraries = standard_libraries + ["windows", "gtk", "qt", "boost"]
-            for lib in extended_libraries:
-                cmd.extend(["--library", lib])
-        
-        # 添加自定义配置文件
-        if self.config_file and self.config_file.exists():
-            cmd.extend(["--library", str(self.config_file)])
+        # 检测Cppcheck版本并决定是否使用库配置
+        try:
+            from ..utils.windows_compat import run_command_safe
+            version_result = run_command_safe(["cppcheck", "--version"], timeout=10)
+            version_text = version_result.stdout
+
+            # 提取版本号
+            import re
+            version_match = re.search(r'Cppcheck (\d+)\.(\d+)', version_text)
+            if version_match:
+                major, minor = int(version_match.group(1)), int(version_match.group(2))
+                supports_library = (major > 1) or (major == 1 and minor >= 80)  # 1.80+支持--library
+            else:
+                supports_library = False
+
+            if supports_library:
+                # 库配置（官方内置库）
+                standard_libraries = ["std", "posix"]
+                if single_file:
+                    # 单文件分析时使用基础库
+                    for lib in standard_libraries:
+                        cmd.extend(["--library", lib])
+                else:
+                    # 项目分析时使用完整库配置
+                    extended_libraries = standard_libraries + ["windows", "gtk", "qt", "boost"]
+                    for lib in extended_libraries:
+                        cmd.extend(["--library", lib])
+
+                # 添加自定义配置文件
+                if self.config_file and self.config_file.exists():
+                    cmd.extend(["--library", str(self.config_file)])
+
+                logger.debug(f"使用Cppcheck库配置 (版本 {major}.{minor})")
+            else:
+                logger.debug(f"Cppcheck版本不支持--library参数，跳过库配置")
+
+        except Exception as e:
+            logger.debug(f"无法检测Cppcheck版本，跳过库配置: {e}")
         
         # 抑制规则配置（基于官方推荐）
         suppressions = [
@@ -332,10 +357,11 @@ class CppcheckAnalyzer:
                     file_count = len(c_files) + len(cpp_files)
                     
                     if file_count > 100:
-                        # 大型项目优化
+                        # 大型项目优化 (针对10万行项目)
                         cmd.extend([
-                            "--max-configs=8",  # 减少配置数量提高性能
+                            "--max-configs=16",  # 增加配置数量以充分利用16GB内存
                             "--template='{file}:{line}: [{severity}] {message} [{id}]'",  # 简化输出
+                            "-j", "12",  # 增加并行作业数
                         ])
                     elif file_count > 20:
                         # 中型项目配置
@@ -353,13 +379,30 @@ class CppcheckAnalyzer:
     def _parse_cppcheck_output(self, xml_output: str) -> List[Dict[str, Any]]:
         """解析Cppcheck XML输出"""
         findings = []
-        
+
         try:
             if not xml_output.strip():
+                logger.debug("Cppcheck输出为空")
                 return findings
-            
-            root = ET.fromstring(xml_output)
-            
+
+            # 检查是否是有效的XML
+            if not xml_output.strip().startswith('<?xml') and not xml_output.strip().startswith('<'):
+                logger.warning(f"Cppcheck输出不是有效的XML格式: {xml_output[:100]}...")
+                return findings
+
+            # 尝试解析XML
+            try:
+                root = ET.fromstring(xml_output)
+            except ET.ParseError as e:
+                # 如果XML解析失败，尝试添加根元素
+                logger.debug(f"直接解析失败，尝试包装: {e}")
+                wrapped_xml = f"<results>{xml_output}</results>"
+                try:
+                    root = ET.fromstring(wrapped_xml)
+                except ET.ParseError:
+                    logger.warning("XML包装后仍然解析失败，跳过Cppcheck结果")
+                    return findings
+
             # 查找所有错误
             for error in root.findall(".//error"):
                 finding = {
@@ -370,24 +413,27 @@ class CppcheckAnalyzer:
                     "cwe": error.get("cwe", ""),
                     "locations": []
                 }
-                
+
                 # 查找位置信息
                 for location in error.findall("location"):
-                    loc_info = {
-                        "file": location.get("file", ""),
-                        "line": int(location.get("line", 0)),
-                        "column": int(location.get("column", 0)),
-                        "info": location.get("info", "")
-                    }
-                    finding["locations"].append(loc_info)
-                
+                    try:
+                        loc_info = {
+                            "file": location.get("file", ""),
+                            "line": int(location.get("line", 0)),
+                            "column": int(location.get("column", 0)),
+                            "info": location.get("info", "")
+                        }
+                        finding["locations"].append(loc_info)
+                    except ValueError as e:
+                        logger.debug(f"解析位置信息失败: {e}")
+                        continue
+
                 findings.append(finding)
-                
-        except ET.ParseError as e:
-            logger.error(f"解析Cppcheck XML输出失败: {e}")
+
         except Exception as e:
-            logger.error(f"处理Cppcheck输出异常: {e}")
-        
+            logger.warning(f"处理Cppcheck输出异常: {e}")
+            logger.debug(f"输出内容: {xml_output[:200]}...")
+
         return findings
 
     def _convert_to_symbols(self, findings: List[Dict[str, Any]], project_path: Path) -> List[Dict[str, Any]]:
